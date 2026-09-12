@@ -1,0 +1,52 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Verify formatting
+        run: |
+          gofmt -w .
+          git diff --exit-code
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build
+        run: go build ./cmd/installgate
+
+      - name: Check required repository files
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md AGENTS.md docs/SPEC.md docs/ARCHITECTURE.md docs/ROADMAP.md docs/RELEASE_CHECKLIST.md)
+          for file in "${required[@]}"; do
+            test -s "$file" || { echo "Missing or empty: $file"; exit 1; }
+          done
+
+      - name: Reject merge markers, machine paths, and credential shapes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)|/Users/[^/]+/|<owner>|(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})' --exclude-dir=.git --exclude=validate.yml .; then
+            echo "Repository contains unsafe publication content."
+            exit 1
+          fi

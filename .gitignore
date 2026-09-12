@@ -1,0 +1,9 @@
+/bin/
+/dist/
+/installgate
+/.installgate/
+*.db
+*.db-shm
+*.db-wal
+coverage.out
+.DS_Store
