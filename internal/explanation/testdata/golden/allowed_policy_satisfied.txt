@@ -1,0 +1,19 @@
+InstallGate Decision: ALLOWED
+Decision ID: dec_5c326812d909557d
+Package:     debug@4.3.4
+Snapshot:    sha256:7727f457d6a45bc4c20a06383f1c870844d01a781fcb2576c098a0993edd6cde
+
+POLICY EVALUATION:
+  Rule:    core.policy-satisfied
+  Summary: available evidence satisfies the configured policy
+  Evidence:
+    none recorded
+
+MISSING EVIDENCE:
+  none (complete evaluation)
+
+CHANGES DETECTED:
+  none (no unexpected changes observed)
+
+NEXT COMMAND:
+  npm install debug@4.3.4

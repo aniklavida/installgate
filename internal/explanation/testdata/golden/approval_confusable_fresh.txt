@@ -1,0 +1,28 @@
+InstallGate Decision: APPROVAL REQUIRED
+Decision ID: dec_0b9d79430050420e
+Package:     re-act@0.0.1
+Snapshot:    sha256:0bc1a5d4bd85563d183555cd573a50b66b5f34387a1e0dcad4bcdeb034b133c4
+
+HOLD EVIDENCE:
+  Rule:    identity.confusable-new
+  Summary: a strongly confusing package name is corroborated by package freshness: confusable with target "react"
+  Evidence:
+    - Kind:       name_confusion
+      Source:     local_similarity
+      Observed:   confusion_detected:react
+      Confidence: high
+      Freshness:  fresh (retrieved 2026-09-15T12:00:00Z, fresh until 2026-09-16T00:00:00Z)
+    - Kind:       package_age
+      Source:     npm_registry
+      Observed:   fresh
+      Confidence: high
+      Freshness:  fresh (retrieved 2026-09-15T12:00:00Z, fresh until 2026-09-15T12:15:00Z)
+
+MISSING EVIDENCE:
+  none (complete evaluation)
+
+CHANGES DETECTED:
+  - name_confusion: package name confusable with target "react"
+
+NEXT COMMAND:
+  installgate approve dec_0b9d79430050420e

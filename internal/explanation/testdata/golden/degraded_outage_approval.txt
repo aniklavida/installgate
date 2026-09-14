@@ -1,0 +1,29 @@
+DEGRADED DECISION: live evidence unavailable; evaluation completed with fallback policy.
+
+InstallGate Decision: APPROVAL REQUIRED
+Decision ID: dec_ac44a98a88a95124
+Package:     lodash@4.17.21
+Snapshot:    sha256:284a9add0616b93138ff141fb393e43e3c9b95eec669304093b2e870c801d416
+
+HOLD EVIDENCE:
+  Rule:    availability.no-cache
+  Summary: required evidence is unavailable and no usable cached allow exists
+  Evidence:
+    - Kind:       availability
+      Source:     osv
+      Observed:   unavailable
+      Confidence: none
+      Freshness:  unavailable (retrieved 2026-09-15T12:00:00Z, fresh until 2026-09-15T12:00:00Z)
+
+MISSING EVIDENCE:
+  - Kind:   availability
+    Source: osv
+    Reason: provider request failed or timed out
+
+CHANGES DETECTED:
+  none (no unexpected changes observed)
+
+NEXT COMMAND:
+  installgate approve dec_ac44a98a88a95124
+
+NOTE: Advisory evidence sourced from OSV (GitHub Advisory Database).
