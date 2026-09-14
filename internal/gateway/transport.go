@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aniklavida/installgate/internal/evidence"
 	"github.com/aniklavida/installgate/internal/explanation"
+	"github.com/aniklavida/installgate/internal/quarantine"
 	"github.com/aniklavida/installgate/internal/verdict"
 )
 
@@ -44,12 +48,14 @@ var hopByHopHeaders = map[string]bool{
 
 // Config configures the gateway transport and HTTP handler.
 type Config struct {
-	UpstreamBaseURL string
-	Transport       http.RoundTripper
-	Timeout         time.Duration
-	MaxBodyBytes    int64
-	Evaluator       Evaluator
-	DecisionStore   explanation.DecisionStore
+	UpstreamBaseURL   string
+	Transport         http.RoundTripper
+	Timeout           time.Duration
+	MaxBodyBytes      int64
+	Evaluator         Evaluator
+	DecisionStore     explanation.DecisionStore
+	Quarantine        *quarantine.Manager
+	IntegrityResolver quarantine.IntegrityResolver
 }
 
 // Evaluator assesses package requests against policy.
@@ -208,11 +214,14 @@ func (t *UpstreamTransport) buildUpstreamURL(route Route, rawPath string) (*url.
 
 // Handler handles incoming npm registry HTTP requests.
 type Handler struct {
-	transport     *UpstreamTransport
-	timeout       time.Duration
-	maxBodyBytes  int64
-	evaluator     Evaluator
-	decisionStore explanation.DecisionStore
+	transport         *UpstreamTransport
+	timeout           time.Duration
+	maxBodyBytes      int64
+	evaluator         Evaluator
+	decisionStore     explanation.DecisionStore
+	quarantine        *quarantine.Manager
+	integrityIndex    *quarantine.IntegrityIndex
+	integrityResolver quarantine.IntegrityResolver
 }
 
 // NewHandler constructs a gateway Handler.
@@ -221,13 +230,33 @@ func NewHandler(cfg Config) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	integrityIndex := quarantine.NewIntegrityIndex()
+	resolver := cfg.IntegrityResolver
+	if resolver == nil {
+		resolver = integrityIndex
+	}
+
 	return &Handler{
-		transport:     upstreamTransport,
-		timeout:       upstreamTransport.timeout,
-		maxBodyBytes:  upstreamTransport.maxBodyBytes,
-		evaluator:     cfg.Evaluator,
-		decisionStore: cfg.DecisionStore,
+		transport:         upstreamTransport,
+		timeout:           upstreamTransport.timeout,
+		maxBodyBytes:      upstreamTransport.maxBodyBytes,
+		evaluator:         cfg.Evaluator,
+		decisionStore:     cfg.DecisionStore,
+		quarantine:        cfg.Quarantine,
+		integrityIndex:    integrityIndex,
+		integrityResolver: resolver,
 	}, nil
+}
+
+// Quarantine returns the quarantine manager configured on the handler, if any.
+func (h *Handler) Quarantine() *quarantine.Manager {
+	return h.quarantine
+}
+
+// IntegrityIndex returns the integrity registry on the handler.
+func (h *Handler) IntegrityIndex() *quarantine.IntegrityIndex {
+	return h.integrityIndex
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -262,6 +291,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, h.timeout)
 		defer cancel()
+	}
+
+	// Route tarballs through quarantine when configured:
+	// "QUARANTINE IS THE ONLY PATH by which InstallGate itself holds package bytes.
+	// The gateway must not stream a tarball through to the client and inspect it afterwards."
+	if route.Kind == Tarball && req.Method == http.MethodGet && h.quarantine != nil {
+		h.handleQuarantinedTarball(w, req, route, ctx)
+		return
 	}
 
 	if h.evaluator != nil && route.Package != "" {
@@ -311,12 +348,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// For metadata responses, snoop version integrities to populate the integrity index
+	var metadataBuf bytes.Buffer
+	if route.Kind == Metadata && resp.StatusCode == http.StatusOK && h.integrityIndex != nil {
+		reader = io.TeeReader(reader, &metadataBuf)
+	}
+
 	_, err = io.Copy(w, reader)
 	if err != nil {
 		if errors.Is(err, errBodyLimitExceeded) {
 			panic(http.ErrAbortHandler)
 		}
 		return
+	}
+
+	if route.Kind == Metadata && resp.StatusCode == http.StatusOK && h.integrityIndex != nil {
+		h.indexPackumentIntegrities(route.Package, metadataBuf.Bytes())
 	}
 }
 
@@ -431,4 +478,230 @@ func WriteBlockedResponse(w http.ResponseWriter, doc *explanation.DecisionDocume
 		"verdict":     string(doc.Verdict),
 	}
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func (h *Handler) handleQuarantinedTarball(w http.ResponseWriter, req *http.Request, route Route, ctx context.Context) {
+	// 1. Pre-fetch policy check
+	if h.evaluator != nil && route.Package != "" {
+		doc, err := h.evaluator.Evaluate(ctx, route.Package, route.Version)
+		if err != nil {
+			http.Error(w, "bad gateway: policy evaluation error", http.StatusBadGateway)
+			return
+		}
+		if doc != nil && (doc.Verdict == verdict.Block || doc.Verdict == verdict.ApprovalRequired) {
+			if h.decisionStore != nil {
+				_ = h.decisionStore.Save(doc)
+			}
+			WriteBlockedResponse(w, doc)
+			return
+		}
+	}
+
+	// 2. Fetch tarball from upstream
+	resp, err := h.transport.RoundTrip(ctx, route, req)
+	if err != nil {
+		h.handleRoundTripError(w, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 500 {
+		http.Error(w, "bad gateway: upstream service error", http.StatusBadGateway)
+		return
+	}
+
+	// For non-200 responses (e.g. 302 redirect, 304, 404), pass through upstream response
+	if resp.StatusCode != http.StatusOK {
+		copyResponseHeaders(resp.Header, w.Header())
+		w.WriteHeader(resp.StatusCode)
+		return
+	}
+
+	// 3. Resolve expected integrity digest
+	expectedIntegrity, err := h.resolveExpectedIntegrity(ctx, route.Package, route.Version, req.Header.Get("X-Package-Integrity"))
+	if err != nil || expectedIntegrity == "" {
+		doc := h.makeIntegrityDecisionDoc(route.Package, route.Version, "unresolvable", "upstream package integrity could not be resolved")
+		if h.decisionStore != nil {
+			_ = h.decisionStore.Save(doc)
+		}
+		WriteBlockedResponse(w, doc)
+		return
+	}
+
+	// 4. Ingest into quarantine: FIRST INTEGRITY VERIFICATION
+	entry, err := h.quarantine.Ingest(ctx, route.Package, route.Version, expectedIntegrity, resp.Body)
+	if err != nil {
+		if errors.Is(err, quarantine.ErrIntegrityMismatch) {
+			doc := h.makeIntegrityDecisionDoc(route.Package, route.Version, "mismatch", "package integrity verification failed (checksum mismatch)")
+			if h.decisionStore != nil {
+				_ = h.decisionStore.Save(doc)
+			}
+			WriteBlockedResponse(w, doc)
+			return
+		}
+		http.Error(w, "bad gateway: quarantine ingestion failed", http.StatusBadGateway)
+		return
+	}
+
+	// 5. Safe static inspection
+	inspection, err := h.quarantine.Inspect(ctx, entry)
+	if err != nil {
+		doc := h.makeIntegrityDecisionDoc(route.Package, route.Version, "failed", "quarantine inspection rejected unsafe archive structure")
+		if h.decisionStore != nil {
+			_ = h.decisionStore.Save(doc)
+		}
+		WriteBlockedResponse(w, doc)
+		return
+	}
+	_ = inspection
+
+	// 6. Post-inspection policy evaluation
+	if h.evaluator != nil {
+		doc, err := h.evaluator.Evaluate(ctx, route.Package, route.Version)
+		if err != nil {
+			http.Error(w, "bad gateway: policy evaluation error", http.StatusBadGateway)
+			return
+		}
+		if doc != nil && (doc.Verdict == verdict.Block || doc.Verdict == verdict.ApprovalRequired) {
+			if h.decisionStore != nil {
+				_ = h.decisionStore.Save(doc)
+			}
+			WriteBlockedResponse(w, doc)
+			return
+		}
+	}
+
+	// 7. SECOND INTEGRITY VERIFICATION before release
+	releaseStream, releaseSize, err := h.quarantine.VerifyAndRelease(ctx, entry.Key, expectedIntegrity)
+	if err != nil {
+		if errors.Is(err, quarantine.ErrIntegrityMismatchSecond) {
+			doc := h.makeIntegrityDecisionDoc(route.Package, route.Version, "mismatch", "second integrity verification failed: blob modified or corrupted before release")
+			if h.decisionStore != nil {
+				_ = h.decisionStore.Save(doc)
+			}
+			WriteBlockedResponse(w, doc)
+			return
+		}
+		http.Error(w, "bad gateway: quarantine release failed", http.StatusBadGateway)
+		return
+	}
+	defer releaseStream.Close()
+
+	// 8. Deliver verified blob to client
+	copyResponseHeaders(resp.Header, w.Header())
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", releaseSize))
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = io.Copy(w, releaseStream)
+}
+
+func (h *Handler) resolveExpectedIntegrity(ctx context.Context, pkg, version, headerIntegrity string) (string, error) {
+	if headerIntegrity != "" {
+		return headerIntegrity, nil
+	}
+	if h.integrityIndex != nil {
+		if val, ok := h.integrityIndex.Get(pkg, version); ok {
+			return val, nil
+		}
+	}
+	if h.integrityResolver != nil {
+		val, err := h.integrityResolver.ResolveIntegrity(ctx, pkg, version)
+		if err == nil && val != "" {
+			return val, nil
+		}
+	}
+
+	metaRoute := Route{Kind: Metadata, Package: pkg}
+	dummyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://dummy/"+pkg, nil)
+	if err != nil {
+		return "", err
+	}
+	dummyReq.Header.Set("Accept", "application/json")
+
+	resp, err := h.transport.RoundTrip(ctx, metaRoute, dummyReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("upstream returned status %d fetching metadata", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	h.indexPackumentIntegrities(pkg, bodyBytes)
+
+	if h.integrityIndex != nil {
+		if val, ok := h.integrityIndex.Get(pkg, version); ok {
+			return val, nil
+		}
+	}
+
+	return "", fmt.Errorf("integrity not found for %s@%s", pkg, version)
+}
+
+func (h *Handler) indexPackumentIntegrities(pkg string, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	var reader io.Reader = bytes.NewReader(data)
+	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		gz, err := gzip.NewReader(reader)
+		if err == nil {
+			defer gz.Close()
+			reader = gz
+		}
+	}
+
+	var doc struct {
+		Versions map[string]struct {
+			Dist struct {
+				Integrity string `json:"integrity"`
+				Shasum    string `json:"shasum"`
+			} `json:"dist"`
+		} `json:"versions"`
+	}
+
+	if err := json.NewDecoder(reader).Decode(&doc); err == nil {
+		for ver, verDoc := range doc.Versions {
+			integ := verDoc.Dist.Integrity
+			if integ == "" {
+				integ = verDoc.Dist.Shasum
+			}
+			if integ != "" && h.integrityIndex != nil {
+				h.integrityIndex.Set(pkg, ver, integ)
+			}
+		}
+	}
+}
+
+func (h *Handler) makeIntegrityDecisionDoc(pkg, version, observation, summary string) *explanation.DecisionDocument {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sig := verdict.Signal{
+		Kind:        evidence.KindIntegrity,
+		Source:      "quarantine",
+		Observation: observation,
+		Confidence:  evidence.ConfidenceHigh,
+		RetrievedAt: now,
+		FreshUntil:  now.Add(24 * time.Hour),
+	}
+	states := map[string]evidence.State{
+		evidence.KindIntegrity: evidence.StateAvailable,
+	}
+	snap := evidence.NewSnapshot(pkg, version, []verdict.Signal{sig}, states, now)
+	dec := verdict.Decision{
+		Verdict: verdict.Block,
+		Reasons: []verdict.Reason{{
+			RuleID:      "core.integrity-or-malicious",
+			Summary:     summary,
+			SignalKinds: []string{evidence.KindIntegrity},
+		}},
+	}
+	doc, _ := explanation.NewDecisionDocument(pkg, version, dec, snap, explanation.WithReferenceTime(now))
+	return doc
 }
