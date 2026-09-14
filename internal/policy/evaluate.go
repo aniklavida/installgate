@@ -32,26 +32,24 @@ type Assessment struct {
 	ConfusedWith                  string
 }
 
-// Evaluate applies the current deterministic foundation policy.
+// Evaluate applies the deterministic decision matrix according to the chosen profile.
+// Strict profile is never more permissive than balanced profile for any input state.
 func Evaluate(profile Profile, a Assessment) verdict.Decision {
 	if a.PackageNotFound {
 		return decision(verdict.Block, "registry.package-not-found", "package or version does not exist in the registry", false, "publish_history")
 	}
+
+	// Row 1: Integrity mismatch, or a known malicious package or version - block, block.
 	if a.IntegrityMismatch || a.KnownMalicious {
 		return decision(verdict.Block, "core.integrity-or-malicious", "integrity mismatch or known malicious evidence", false, "integrity", "malicious")
 	}
+
+	// Row 2: Vulnerability above the configured severity threshold - block, block.
 	if a.VulnerabilityAboveThreshold {
 		return decision(verdict.Block, "core.vulnerability-threshold", "vulnerability exceeds the configured threshold", false, "vulnerability")
 	}
-	if a.EvidenceUnavailable {
-		if profile == Balanced && a.FreshCachedAllow {
-			return decision(verdict.Allow, "availability.fresh-cache", "live evidence is unavailable; a fresh cached allow remains usable with a stale-evidence warning", true, "availability", "cache")
-		}
-		if profile == Strict && !a.FreshCachedAllow {
-			return decision(verdict.Block, "availability.strict", "required evidence is unavailable under the strict profile", true, "availability")
-		}
-		return decision(verdict.ApprovalRequired, "availability.no-cache", "required evidence is unavailable and no usable cached allow exists", true, "availability")
-	}
+
+	// Row 3: Strong name confusion corroborated by a newborn or fresh package - approval required, block.
 	if a.StrongNameConfusion && a.NewbornOrFresh {
 		summary := "a strongly confusing package name is corroborated by package freshness"
 		if a.ConfusedWith != "" {
@@ -62,24 +60,48 @@ func Evaluate(profile Profile, a Assessment) verdict.Decision {
 		}
 		return decision(verdict.ApprovalRequired, "identity.confusable-new", summary, false, "name_confusion", "package_age")
 	}
+
+	// Row 4: Publisher or provenance change combined with a newly introduced install script - approval required, block.
 	if a.PublisherOrProvenanceChanged && a.InstallScriptAdded {
 		if profile == Strict {
 			return decision(verdict.Block, "release.provenance-script-change", "publisher or provenance changed when an install script was added", false, "provenance", "install_script")
 		}
 		return decision(verdict.ApprovalRequired, "release.provenance-script-change", "publisher or provenance changed when an install script was added", false, "provenance", "install_script")
 	}
-	if a.HasInstallScriptOrNativeBuild {
+
+	// Row 5: Install script or implicit native build with no corroborating risk - warn and audit, approval required.
+	// Applies when evidence is available; evidence outages are governed by rows 6 and 7.
+	if a.HasInstallScriptOrNativeBuild && !a.EvidenceUnavailable {
 		if profile == Strict {
 			return decision(verdict.ApprovalRequired, "execution.install-time", "the package can execute install-time code", false, "install_script")
 		}
 		return decision(verdict.Warn, "execution.install-time", "the package can execute install-time code", false, "install_script")
 	}
+
+	// Row 6: Evidence provider unavailable with a fresh cached allow - allow with a stale-evidence warning, approval required.
+	if a.EvidenceUnavailable && a.FreshCachedAllow {
+		if profile == Strict {
+			return decision(verdict.ApprovalRequired, "availability.fresh-cache", "live evidence is unavailable; a fresh cached allow requires approval under the strict profile", true, "availability", "cache")
+		}
+		return decision(verdict.Allow, "availability.fresh-cache", "live evidence is unavailable; a fresh cached allow remains usable with a stale-evidence warning", true, "availability", "cache")
+	}
+
+	// Row 7: Evidence provider unavailable with no usable cache - approval required, block.
+	if a.EvidenceUnavailable {
+		if profile == Strict {
+			return decision(verdict.Block, "availability.strict", "required evidence is unavailable under the strict profile", true, "availability")
+		}
+		return decision(verdict.ApprovalRequired, "availability.no-cache", "required evidence is unavailable and no usable cached allow exists", true, "availability")
+	}
+
+	// Row 8: Low popularity or missing repository alone - informational, warn.
 	if a.LowPopularity || a.MissingRepository {
 		if profile == Strict {
 			return decision(verdict.Warn, "reputation.weak-signal", "weak reputation evidence is informational and not proof of maliciousness", false, "reputation")
 		}
 		return decision(verdict.Allow, "reputation.informational", "weak reputation evidence alone does not justify a hold", false, "reputation")
 	}
+
 	return decision(verdict.Allow, "core.policy-satisfied", "available evidence satisfies the configured policy", false)
 }
 
@@ -91,8 +113,13 @@ func decision(kind verdict.Kind, ruleID, summary string, degraded bool, signals 
 	}
 }
 
-// Assess converts an immutable evidence snapshot into an Assessment purely and deterministically.
+// Assess converts an immutable evidence snapshot into an Assessment purely and deterministically using the default high threshold.
 func Assess(snap evidence.Snapshot) Assessment {
+	return AssessWithThreshold(snap, SeverityHigh)
+}
+
+// AssessWithThreshold converts an immutable evidence snapshot into an Assessment evaluating vulnerability observations against the specified threshold.
+func AssessWithThreshold(snap evidence.Snapshot, threshold Severity) Assessment {
 	var a Assessment
 
 	for _, obs := range snap.Observations() {
@@ -106,10 +133,10 @@ func Assess(snap evidence.Snapshot) Assessment {
 				a.KnownMalicious = true
 			}
 		case evidence.KindVulnerability:
-			if obs.Observation == "above_threshold" || obs.Observation == "critical" || obs.Observation == "high" {
-				a.VulnerabilityAboveThreshold = true
-			} else if obs.Observation == "malicious" {
+			if obs.Observation == "malicious" {
 				a.KnownMalicious = true
+			} else if isVulnerabilityAboveThreshold(obs.Observation, threshold) {
+				a.VulnerabilityAboveThreshold = true
 			}
 		case evidence.KindNameConfusion:
 			if obs.Observation == "confusion_detected" || obs.Observation == "true" || strings.HasPrefix(obs.Observation, "confusion_detected:") {
@@ -168,6 +195,42 @@ func Assess(snap evidence.Snapshot) Assessment {
 	}
 
 	return a
+}
+
+func isVulnerabilityAboveThreshold(obs string, threshold Severity) bool {
+	if obs == "above_threshold" {
+		return true
+	}
+	if obs == "below_threshold" || obs == "none" || obs == "no_record_found" {
+		return false
+	}
+
+	obsRank, err := parseSeverityRank(obs)
+	if err != nil {
+		return false
+	}
+
+	targetRank, ok := severityRanks[threshold]
+	if !ok {
+		targetRank = severityRanks[SeverityHigh]
+	}
+
+	return obsRank >= targetRank
+}
+
+func parseSeverityRank(s string) (int, error) {
+	switch strings.ToLower(s) {
+	case "critical":
+		return 4, nil
+	case "high":
+		return 3, nil
+	case "medium", "moderate":
+		return 2, nil
+	case "low":
+		return 1, nil
+	default:
+		return 0, fmt.Errorf("unknown severity: %s", s)
+	}
 }
 
 // EvaluateSnapshot applies the deterministic foundation policy to an immutable evidence snapshot.

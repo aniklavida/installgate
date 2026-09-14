@@ -1,0 +1,16 @@
+# InstallGate repository policy
+#
+# Bounds:
+# Repository policy may tighten controls:
+# - profile: choose "balanced" (default) or "strict"
+# - vulnerability_threshold: choose "critical", "high" (default), "medium", or "low"
+#
+# Repository policy may NOT loosen core invariants:
+# - Integrity mismatches and known malicious packages always block
+# - Evidence outages always degrade decisions and cannot be ignored
+# - Low popularity or missing repository alone can never produce approval_required or block
+# - Policy evaluation must remain deterministic and side-effect free
+
+version: "1"
+profile: balanced
+vulnerability_threshold: high
