@@ -6,10 +6,17 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 )
 
 func createTestTarball(t *testing.T, files map[string][]byte, symlinks map[string]string) []byte {
+	t.Helper()
+	return createCustomTarball(t, files, symlinks, nil, nil)
+}
+
+func createCustomTarball(t *testing.T, files map[string][]byte, symlinks map[string]string, hardlinks map[string]string, duplicates []string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
@@ -41,6 +48,32 @@ func createTestTarball(t *testing.T, files map[string][]byte, symlinks map[strin
 		}
 	}
 
+	for name, target := range hardlinks {
+		hdr := &tar.Header{
+			Name:     name,
+			Linkname: target,
+			Typeflag: tar.TypeLink,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("failed writing tar hardlink header for %s: %v", name, err)
+		}
+	}
+
+	for _, name := range duplicates {
+		hdr := &tar.Header{
+			Name:     name,
+			Mode:     0o644,
+			Size:     int64(len("duplicate")),
+			Typeflag: tar.TypeReg,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("failed writing duplicate tar header for %s: %v", name, err)
+		}
+		if _, err := tw.Write([]byte("duplicate")); err != nil {
+			t.Fatalf("failed writing duplicate tar content for %s: %v", name, err)
+		}
+	}
+
 	if err := tw.Close(); err != nil {
 		t.Fatalf("failed closing tar writer: %v", err)
 	}
@@ -57,7 +90,6 @@ func TestArchiveLimits_Validation(t *testing.T) {
 		t.Fatalf("valid limits failed validation: %v", err)
 	}
 
-	// Each field must be positive
 	testCases := []struct {
 		name   string
 		mutate func(*ArchiveLimits)
@@ -66,6 +98,7 @@ func TestArchiveLimits_Validation(t *testing.T) {
 		{"ZeroMaxExtractedBytes", func(l *ArchiveLimits) { l.MaxExtractedBytes = 0 }},
 		{"ZeroMaxEntryCount", func(l *ArchiveLimits) { l.MaxEntryCount = 0 }},
 		{"ZeroMaxFileBytes", func(l *ArchiveLimits) { l.MaxFileBytes = 0 }},
+		{"ZeroMaxNestingDepth", func(l *ArchiveLimits) { l.MaxNestingDepth = 0 }},
 		{"ZeroTimeout", func(l *ArchiveLimits) { l.Timeout = 0 }},
 	}
 
@@ -77,6 +110,28 @@ func TestArchiveLimits_Validation(t *testing.T) {
 				t.Errorf("expected validation error for %s, got nil", tc.name)
 			}
 		})
+	}
+}
+
+func TestArchiveLimits_NamedConstants(t *testing.T) {
+	limits := DefaultArchiveLimits()
+	if limits.MaxTarballBytes != DefaultMaxTarballBytes {
+		t.Errorf("MaxTarballBytes = %d, want %d", limits.MaxTarballBytes, DefaultMaxTarballBytes)
+	}
+	if limits.MaxExtractedBytes != DefaultMaxExtractedBytes {
+		t.Errorf("MaxExtractedBytes = %d, want %d", limits.MaxExtractedBytes, DefaultMaxExtractedBytes)
+	}
+	if limits.MaxEntryCount != DefaultMaxEntryCount {
+		t.Errorf("MaxEntryCount = %d, want %d", limits.MaxEntryCount, DefaultMaxEntryCount)
+	}
+	if limits.MaxFileBytes != DefaultMaxFileBytes {
+		t.Errorf("MaxFileBytes = %d, want %d", limits.MaxFileBytes, DefaultMaxFileBytes)
+	}
+	if limits.MaxNestingDepth != DefaultMaxNestingDepth {
+		t.Errorf("MaxNestingDepth = %d, want %d", limits.MaxNestingDepth, DefaultMaxNestingDepth)
+	}
+	if limits.Timeout != DefaultArchiveTimeout {
+		t.Errorf("Timeout = %v, want %v", limits.Timeout, DefaultArchiveTimeout)
 	}
 }
 
@@ -128,6 +183,7 @@ func TestInspectArchive_DetectsNativeBuild(t *testing.T) {
 	}
 }
 
+// 1. Path Traversal fixture fails closed.
 func TestInspectArchive_PathTraversalBlocked(t *testing.T) {
 	testCases := []struct {
 		name      string
@@ -136,6 +192,8 @@ func TestInspectArchive_PathTraversalBlocked(t *testing.T) {
 		{"RelativeParent", "../../../etc/passwd"},
 		{"SubdirParent", "package/../../etc/passwd"},
 		{"AbsoluteUnix", "/etc/passwd"},
+		{"WindowsBackslashTraversal", "..\\..\\etc\\passwd"},
+		{"WindowsSubdirBackslash", "package\\..\\..\\etc\\passwd"},
 	}
 
 	for _, tc := range testCases {
@@ -156,23 +214,71 @@ func TestInspectArchive_PathTraversalBlocked(t *testing.T) {
 	}
 }
 
+// 2. Symlink Escape fixture fails closed.
 func TestInspectArchive_SymlinkEscapeBlocked(t *testing.T) {
-	tarball := createTestTarball(t, map[string][]byte{
-		"package/package.json": []byte(`{"name":"symlink-pkg"}`),
-	}, map[string]string{
-		"package/secret": "../../etc/shadow",
-	})
-
-	limits := DefaultArchiveLimits()
-	_, err := InspectArchive(context.Background(), bytes.NewReader(tarball), limits)
-	if err == nil {
-		t.Fatal("expected error for escaping symlink, got nil")
+	testCases := []struct {
+		name   string
+		source string
+		target string
+	}{
+		{"EscapingParent", "package/secret", "../../etc/shadow"},
+		{"AbsoluteTarget", "package/secret", "/etc/shadow"},
+		{"DeepRelativeEscape", "package/a/b/c", "../../../../etc/passwd"},
 	}
-	if !errors.Is(err, ErrArchiveSymlinkEscape) {
-		t.Errorf("expected ErrArchiveSymlinkEscape, got: %v", err)
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tarball := createTestTarball(t, map[string][]byte{
+				"package/package.json": []byte(`{"name":"symlink-pkg"}`),
+			}, map[string]string{
+				tc.source: tc.target,
+			})
+
+			limits := DefaultArchiveLimits()
+			_, err := InspectArchive(context.Background(), bytes.NewReader(tarball), limits)
+			if err == nil {
+				t.Fatalf("expected error for escaping symlink %s -> %s, got nil", tc.source, tc.target)
+			}
+			if !errors.Is(err, ErrArchiveSymlinkEscape) {
+				t.Errorf("expected ErrArchiveSymlinkEscape, got: %v", err)
+			}
+		})
 	}
 }
 
+// 3. Hardlink Escape fixture fails closed.
+func TestInspectArchive_HardlinkEscapeBlocked(t *testing.T) {
+	testCases := []struct {
+		name   string
+		source string
+		target string
+	}{
+		{"EscapingParent", "package/hardlink", "../../etc/shadow"},
+		{"AbsoluteTarget", "package/hardlink", "/etc/shadow"},
+		{"DeepRelativeEscape", "package/sub/hardlink", "../../../etc/passwd"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tarball := createCustomTarball(t, map[string][]byte{
+				"package/package.json": []byte(`{"name":"hardlink-pkg"}`),
+			}, nil, map[string]string{
+				tc.source: tc.target,
+			}, nil)
+
+			limits := DefaultArchiveLimits()
+			_, err := InspectArchive(context.Background(), bytes.NewReader(tarball), limits)
+			if err == nil {
+				t.Fatalf("expected error for escaping hardlink %s -> %s, got nil", tc.source, tc.target)
+			}
+			if !errors.Is(err, ErrArchiveHardlinkEscape) {
+				t.Errorf("expected ErrArchiveHardlinkEscape, got: %v", err)
+			}
+		})
+	}
+}
+
+// 4. Archive Bomb and 5. Entry Count and 6. Entry Size fixtures fail closed.
 func TestInspectArchive_BombAndSizeLimits(t *testing.T) {
 	t.Run("ExceedsEntryCount", func(t *testing.T) {
 		files := make(map[string][]byte)
@@ -182,7 +288,7 @@ func TestInspectArchive_BombAndSizeLimits(t *testing.T) {
 		tarball := createTestTarball(t, files, nil)
 
 		limits := DefaultArchiveLimits()
-		limits.MaxEntryCount = 10 // only allow 10 entries
+		limits.MaxEntryCount = 10
 
 		_, err := InspectArchive(context.Background(), bytes.NewReader(tarball), limits)
 		if err == nil {
@@ -228,4 +334,109 @@ func TestInspectArchive_BombAndSizeLimits(t *testing.T) {
 			t.Errorf("expected ErrArchiveBomb, got: %v", err)
 		}
 	})
+
+	t.Run("ExceedsCompressedTarballBytes", func(t *testing.T) {
+		uncompressible := make([]byte, 1000)
+		for i := range uncompressible {
+			uncompressible[i] = byte(i*37 + 13)
+		}
+		tarball := createTestTarball(t, map[string][]byte{
+			"data.bin": uncompressible,
+		}, nil)
+
+		limits := DefaultArchiveLimits()
+		limits.MaxTarballBytes = 100 // compressed size will exceed 100 bytes
+
+		_, err := InspectArchive(context.Background(), bytes.NewReader(tarball), limits)
+		if err == nil {
+			t.Fatal("expected ErrArchiveTooLarge, got nil")
+		}
+		if !errors.Is(err, ErrArchiveTooLarge) {
+			t.Errorf("expected ErrArchiveTooLarge, got: %v", err)
+		}
+	})
+}
+
+// 7. Duplicate Entry fixture fails closed.
+func TestInspectArchive_DuplicateEntryBlocked(t *testing.T) {
+	tarball := createCustomTarball(t, map[string][]byte{
+		"package/index.js": []byte("console.log('original');\n"),
+	}, nil, nil, []string{"package/index.js"})
+
+	limits := DefaultArchiveLimits()
+	_, err := InspectArchive(context.Background(), bytes.NewReader(tarball), limits)
+	if err == nil {
+		t.Fatal("expected ErrArchiveDuplicateEntry, got nil")
+	}
+	if !errors.Is(err, ErrArchiveDuplicateEntry) {
+		t.Errorf("expected ErrArchiveDuplicateEntry, got: %v", err)
+	}
+}
+
+// 8. Nesting Depth fixture fails closed.
+func TestInspectArchive_NestingDepthBlocked(t *testing.T) {
+	deepPath := "package/" + strings.Repeat("sub/", 25) + "index.js"
+	tarball := createTestTarball(t, map[string][]byte{
+		deepPath: []byte("module.exports = {};\n"),
+	}, nil)
+
+	limits := DefaultArchiveLimits()
+	limits.MaxNestingDepth = 10
+
+	_, err := InspectArchive(context.Background(), bytes.NewReader(tarball), limits)
+	if err == nil {
+		t.Fatal("expected ErrArchiveDepthExceeded, got nil")
+	}
+	if !errors.Is(err, ErrArchiveDepthExceeded) {
+		t.Errorf("expected ErrArchiveDepthExceeded, got: %v", err)
+	}
+}
+
+// Nested archive fixture fails closed.
+func TestInspectArchive_NestedArchiveBlocked(t *testing.T) {
+	nestedFormats := []string{
+		"package/embedded.zip",
+		"package/inner.tar.gz",
+		"package/payload.tgz",
+		"package/data.7z",
+	}
+
+	for _, format := range nestedFormats {
+		t.Run(format, func(t *testing.T) {
+			tarball := createTestTarball(t, map[string][]byte{
+				"package/package.json": []byte(`{"name":"nested-pkg"}`),
+				format:                 []byte("fake-nested-archive-bytes"),
+			}, nil)
+
+			limits := DefaultArchiveLimits()
+			_, err := InspectArchive(context.Background(), bytes.NewReader(tarball), limits)
+			if err == nil {
+				t.Fatalf("expected ErrArchiveNestedArchive for %s, got nil", format)
+			}
+			if !errors.Is(err, ErrArchiveNestedArchive) {
+				t.Errorf("expected ErrArchiveNestedArchive, got: %v", err)
+			}
+		})
+	}
+}
+
+// 9. Timeout fixture fails closed.
+func TestInspectArchive_TimeoutBlocked(t *testing.T) {
+	tarball := createTestTarball(t, map[string][]byte{
+		"package/package.json": []byte(`{"name":"timeout-pkg"}`),
+		"package/index.js":     []byte("module.exports = 1;\n"),
+	}, nil)
+
+	limits := DefaultArchiveLimits()
+	// Already expired context
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-1*time.Second))
+	defer cancel()
+
+	_, err := InspectArchive(ctx, bytes.NewReader(tarball), limits)
+	if err == nil {
+		t.Fatal("expected ErrArchiveTimeout on expired context, got nil")
+	}
+	if !errors.Is(err, ErrArchiveTimeout) {
+		t.Errorf("expected ErrArchiveTimeout, got: %v", err)
+	}
 }

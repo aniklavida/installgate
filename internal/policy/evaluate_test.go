@@ -824,3 +824,92 @@ func TestUnavailableEvidenceVisiblyUnavailableInDecision(t *testing.T) {
 		t.Fatalf("reason signal kinds must include 'availability', got %v", reason.SignalKinds)
 	}
 }
+
+func TestDangerousInstallScript_Balanced_BlocksAndNamesScript(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	signals := []verdict.Signal{
+		{
+			Kind:        evidence.KindInstallScript,
+			Source:      "quarantine_inspect",
+			Observation: "indicator:network_access:script:postinstall",
+			Confidence:  evidence.ConfidenceHigh,
+			RetrievedAt: now,
+			FreshUntil:  now.Add(24 * time.Hour),
+		},
+		{
+			Kind:        evidence.KindInstallScript,
+			Source:      "quarantine_inspect",
+			Observation: "dangerous_script:postinstall",
+			Confidence:  evidence.ConfidenceHigh,
+			RetrievedAt: now,
+			FreshUntil:  now.Add(24 * time.Hour),
+		},
+	}
+	states := map[string]evidence.State{
+		evidence.KindInstallScript: evidence.StateAvailable,
+	}
+	snap := evidence.NewSnapshot("danger-pkg", "1.0.0", signals, states, now)
+
+	dec := EvaluateSnapshot(Balanced, snap)
+	if dec.Verdict != verdict.Block {
+		t.Fatalf("verdict = %q, want %q", dec.Verdict, verdict.Block)
+	}
+	if len(dec.Reasons) == 0 || dec.Reasons[0].RuleID != "execution.dangerous-install-script" {
+		t.Fatalf("expected rule 'execution.dangerous-install-script', got: %+v", dec.Reasons)
+	}
+	if !strings.Contains(dec.Reasons[0].Summary, "postinstall") {
+		t.Errorf("expected reason summary to name 'postinstall', got %q", dec.Reasons[0].Summary)
+	}
+}
+
+func TestDangerousInstallScript_Strict_BlocksAndNamesScript(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	signals := []verdict.Signal{
+		{
+			Kind:        evidence.KindInstallScript,
+			Source:      "quarantine_inspect",
+			Observation: "indicator:process_execution:script:preinstall",
+			Confidence:  evidence.ConfidenceHigh,
+			RetrievedAt: now,
+			FreshUntil:  now.Add(24 * time.Hour),
+		},
+	}
+	states := map[string]evidence.State{
+		evidence.KindInstallScript: evidence.StateAvailable,
+	}
+	snap := evidence.NewSnapshot("danger-pre", "1.0.0", signals, states, now)
+
+	dec := EvaluateSnapshot(Strict, snap)
+	if dec.Verdict != verdict.Block {
+		t.Fatalf("verdict = %q, want %q", dec.Verdict, verdict.Block)
+	}
+	if len(dec.Reasons) == 0 || dec.Reasons[0].RuleID != "execution.dangerous-install-script" {
+		t.Fatalf("expected rule 'execution.dangerous-install-script', got: %+v", dec.Reasons)
+	}
+	if !strings.Contains(dec.Reasons[0].Summary, "preinstall") {
+		t.Errorf("expected reason summary to name 'preinstall', got %q", dec.Reasons[0].Summary)
+	}
+}
+
+func TestInspectionTruncated_ProducesDegradedDecision(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	signals := []verdict.Signal{
+		{
+			Kind:        evidence.KindInstallScript,
+			Source:      "quarantine_inspect",
+			Observation: "inspect_truncated",
+			Confidence:  evidence.ConfidenceNone,
+			RetrievedAt: now,
+			FreshUntil:  now.Add(24 * time.Hour),
+		},
+	}
+	states := map[string]evidence.State{
+		evidence.KindInstallScript: evidence.StateDegraded,
+	}
+	snap := evidence.NewSnapshot("truncated-pkg", "1.0.0", signals, states, now)
+
+	dec := EvaluateSnapshot(Balanced, snap)
+	if !dec.Degraded {
+		t.Error("expected decision.Degraded = true when inspect_truncated is present")
+	}
+}
