@@ -546,14 +546,29 @@ func (h *Handler) handleQuarantinedTarball(w http.ResponseWriter, req *http.Requ
 	// 5. Safe static inspection
 	inspection, err := h.quarantine.Inspect(ctx, entry)
 	if err != nil {
-		doc := h.makeIntegrityDecisionDoc(route.Package, route.Version, "failed", "quarantine inspection rejected unsafe archive structure")
+		doc := h.makeIntegrityDecisionDoc(route.Package, route.Version, "failed", fmt.Sprintf("quarantine inspection rejected unsafe archive structure: %v", err))
 		if h.decisionStore != nil {
 			_ = h.decisionStore.Save(doc)
 		}
 		WriteBlockedResponse(w, doc)
 		return
 	}
-	_ = inspection
+
+	if len(inspection.DangerousScripts) > 0 {
+		doc := h.makeDangerousScriptDecisionDoc(route.Package, route.Version, inspection)
+		if h.decisionStore != nil {
+			_ = h.decisionStore.Save(doc)
+		}
+		WriteBlockedResponse(w, doc)
+		return
+	}
+
+	if inspection.Truncated {
+		doc := h.makeTruncatedInspectionDecisionDoc(route.Package, route.Version, inspection)
+		if h.decisionStore != nil {
+			_ = h.decisionStore.Save(doc)
+		}
+	}
 
 	// 6. Post-inspection policy evaluation
 	if h.evaluator != nil {
@@ -562,12 +577,17 @@ func (h *Handler) handleQuarantinedTarball(w http.ResponseWriter, req *http.Requ
 			http.Error(w, "bad gateway: policy evaluation error", http.StatusBadGateway)
 			return
 		}
-		if doc != nil && (doc.Verdict == verdict.Block || doc.Verdict == verdict.ApprovalRequired) {
-			if h.decisionStore != nil {
-				_ = h.decisionStore.Save(doc)
+		if doc != nil {
+			if inspection.Truncated {
+				doc.Degraded = true
 			}
-			WriteBlockedResponse(w, doc)
-			return
+			if doc.Verdict == verdict.Block || doc.Verdict == verdict.ApprovalRequired {
+				if h.decisionStore != nil {
+					_ = h.decisionStore.Save(doc)
+				}
+				WriteBlockedResponse(w, doc)
+				return
+			}
 		}
 	}
 
@@ -701,6 +721,68 @@ func (h *Handler) makeIntegrityDecisionDoc(pkg, version, observation, summary st
 			Summary:     summary,
 			SignalKinds: []string{evidence.KindIntegrity},
 		}},
+	}
+	doc, _ := explanation.NewDecisionDocument(pkg, version, dec, snap, explanation.WithReferenceTime(now))
+	return doc
+}
+
+func (h *Handler) makeDangerousScriptDecisionDoc(pkg, version string, inspection *quarantine.ArchiveInspection) *explanation.DecisionDocument {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	scriptNames := inspection.DangerousScripts
+	scriptName := strings.Join(scriptNames, ", ")
+	summary := fmt.Sprintf("dangerous install script detected in %s", scriptName)
+	if len(inspection.DangerousReasons) > 0 {
+		summary = fmt.Sprintf("dangerous install script detected in %s: %s", scriptName, strings.Join(inspection.DangerousReasons, "; "))
+	}
+
+	signals := inspection.Signals
+	if len(signals) == 0 {
+		signals = append(signals, verdict.Signal{
+			Kind:        evidence.KindInstallScript,
+			Source:      "quarantine_inspect",
+			Observation: fmt.Sprintf("dangerous_script:%s", scriptName),
+			Confidence:  evidence.ConfidenceHigh,
+			RetrievedAt: now,
+			FreshUntil:  now.Add(24 * time.Hour),
+		})
+	}
+
+	state := evidence.StateAvailable
+	if inspection.Truncated {
+		state = evidence.StateDegraded
+	}
+	states := map[string]evidence.State{
+		evidence.KindInstallScript: state,
+	}
+	snap := evidence.NewSnapshot(pkg, version, signals, states, now)
+	dec := verdict.Decision{
+		Verdict: verdict.Block,
+		Reasons: []verdict.Reason{{
+			RuleID:      "execution.dangerous-install-script",
+			Summary:     summary,
+			SignalKinds: []string{evidence.KindInstallScript},
+		}},
+		Degraded: inspection.Truncated,
+	}
+	doc, _ := explanation.NewDecisionDocument(pkg, version, dec, snap, explanation.WithReferenceTime(now))
+	return doc
+}
+
+func (h *Handler) makeTruncatedInspectionDecisionDoc(pkg, version string, inspection *quarantine.ArchiveInspection) *explanation.DecisionDocument {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	signals := inspection.Signals
+	states := map[string]evidence.State{
+		evidence.KindInstallScript: evidence.StateDegraded,
+	}
+	snap := evidence.NewSnapshot(pkg, version, signals, states, now)
+	dec := verdict.Decision{
+		Verdict: verdict.Warn,
+		Reasons: []verdict.Reason{{
+			RuleID:      "execution.install-time",
+			Summary:     "inspection limits were reached; analysis degraded",
+			SignalKinds: []string{evidence.KindInstallScript},
+		}},
+		Degraded: true,
 	}
 	doc, _ := explanation.NewDecisionDocument(pkg, version, dec, snap, explanation.WithReferenceTime(now))
 	return doc

@@ -30,23 +30,42 @@ type Assessment struct {
 	MissingRepository             bool
 	PackageNotFound               bool
 	ConfusedWith                  string
+	DangerousInstallScript        bool
+	DangerousScriptNames          []string
+	DangerousScriptReasons        []string
+	InspectionTruncated           bool
 }
 
 // Evaluate applies the deterministic decision matrix according to the chosen profile.
 // Strict profile is never more permissive than balanced profile for any input state.
 func Evaluate(profile Profile, a Assessment) verdict.Decision {
+	degraded := a.InspectionTruncated
+
 	if a.PackageNotFound {
-		return decision(verdict.Block, "registry.package-not-found", "package or version does not exist in the registry", false, "publish_history")
+		return decision(verdict.Block, "registry.package-not-found", "package or version does not exist in the registry", degraded, "publish_history")
 	}
 
 	// Row 1: Integrity mismatch, or a known malicious package or version - block, block.
 	if a.IntegrityMismatch || a.KnownMalicious {
-		return decision(verdict.Block, "core.integrity-or-malicious", "integrity mismatch or known malicious evidence", false, "integrity", "malicious")
+		return decision(verdict.Block, "core.integrity-or-malicious", "integrity mismatch or known malicious evidence", degraded, "integrity", "malicious")
+	}
+
+	// Dangerous install script detected during static inspection - block, block.
+	if a.DangerousInstallScript {
+		scriptName := "lifecycle script"
+		if len(a.DangerousScriptNames) > 0 {
+			scriptName = strings.Join(uniqueStrings(a.DangerousScriptNames), ", ")
+		}
+		summary := fmt.Sprintf("dangerous install script detected in %s", scriptName)
+		if len(a.DangerousScriptReasons) > 0 {
+			summary = fmt.Sprintf("dangerous install script detected in %s: %s", scriptName, strings.Join(uniqueStrings(a.DangerousScriptReasons), "; "))
+		}
+		return decision(verdict.Block, "execution.dangerous-install-script", summary, degraded, "install_script")
 	}
 
 	// Row 2: Vulnerability above the configured severity threshold - block, block.
 	if a.VulnerabilityAboveThreshold {
-		return decision(verdict.Block, "core.vulnerability-threshold", "vulnerability exceeds the configured threshold", false, "vulnerability")
+		return decision(verdict.Block, "core.vulnerability-threshold", "vulnerability exceeds the configured threshold", degraded, "vulnerability")
 	}
 
 	// Row 3: Strong name confusion corroborated by a newborn or fresh package - approval required, block.
@@ -56,26 +75,26 @@ func Evaluate(profile Profile, a Assessment) verdict.Decision {
 			summary = fmt.Sprintf("a strongly confusing package name is corroborated by package freshness: confusable with target %q", a.ConfusedWith)
 		}
 		if profile == Strict {
-			return decision(verdict.Block, "identity.confusable-new", summary, false, "name_confusion", "package_age")
+			return decision(verdict.Block, "identity.confusable-new", summary, degraded, "name_confusion", "package_age")
 		}
-		return decision(verdict.ApprovalRequired, "identity.confusable-new", summary, false, "name_confusion", "package_age")
+		return decision(verdict.ApprovalRequired, "identity.confusable-new", summary, degraded, "name_confusion", "package_age")
 	}
 
 	// Row 4: Publisher or provenance change combined with a newly introduced install script - approval required, block.
 	if a.PublisherOrProvenanceChanged && a.InstallScriptAdded {
 		if profile == Strict {
-			return decision(verdict.Block, "release.provenance-script-change", "publisher or provenance changed when an install script was added", false, "provenance", "install_script")
+			return decision(verdict.Block, "release.provenance-script-change", "publisher or provenance changed when an install script was added", degraded, "provenance", "install_script")
 		}
-		return decision(verdict.ApprovalRequired, "release.provenance-script-change", "publisher or provenance changed when an install script was added", false, "provenance", "install_script")
+		return decision(verdict.ApprovalRequired, "release.provenance-script-change", "publisher or provenance changed when an install script was added", degraded, "provenance", "install_script")
 	}
 
 	// Row 5: Install script or implicit native build with no corroborating risk - warn and audit, approval required.
 	// Applies when evidence is available; evidence outages are governed by rows 6 and 7.
 	if a.HasInstallScriptOrNativeBuild && !a.EvidenceUnavailable {
 		if profile == Strict {
-			return decision(verdict.ApprovalRequired, "execution.install-time", "the package can execute install-time code", false, "install_script")
+			return decision(verdict.ApprovalRequired, "execution.install-time", "the package can execute install-time code", degraded, "install_script")
 		}
-		return decision(verdict.Warn, "execution.install-time", "the package can execute install-time code", false, "install_script")
+		return decision(verdict.Warn, "execution.install-time", "the package can execute install-time code", degraded, "install_script")
 	}
 
 	// Row 6: Evidence provider unavailable with a fresh cached allow - allow with a stale-evidence warning, approval required.
@@ -97,12 +116,24 @@ func Evaluate(profile Profile, a Assessment) verdict.Decision {
 	// Row 8: Low popularity or missing repository alone - informational, warn.
 	if a.LowPopularity || a.MissingRepository {
 		if profile == Strict {
-			return decision(verdict.Warn, "reputation.weak-signal", "weak reputation evidence is informational and not proof of maliciousness", false, "reputation")
+			return decision(verdict.Warn, "reputation.weak-signal", "weak reputation evidence is informational and not proof of maliciousness", degraded, "reputation")
 		}
-		return decision(verdict.Allow, "reputation.informational", "weak reputation evidence alone does not justify a hold", false, "reputation")
+		return decision(verdict.Allow, "reputation.informational", "weak reputation evidence alone does not justify a hold", degraded, "reputation")
 	}
 
-	return decision(verdict.Allow, "core.policy-satisfied", "available evidence satisfies the configured policy", false)
+	return decision(verdict.Allow, "core.policy-satisfied", "available evidence satisfies the configured policy", degraded)
+}
+
+func uniqueStrings(slice []string) []string {
+	seen := make(map[string]bool)
+	var res []string
+	for _, s := range slice {
+		if !seen[s] {
+			seen[s] = true
+			res = append(res, s)
+		}
+	}
+	return res
 }
 
 func decision(kind verdict.Kind, ruleID, summary string, degraded bool, signals ...string) verdict.Decision {
@@ -168,6 +199,21 @@ func AssessWithThreshold(snap evidence.Snapshot, threshold Severity) Assessment 
 				a.HasInstallScriptOrNativeBuild = true
 			} else if obs.Observation == "present" || obs.Observation == "native_build" {
 				a.HasInstallScriptOrNativeBuild = true
+			} else if obs.Observation == "inspect_truncated" {
+				a.InspectionTruncated = true
+			} else if strings.HasPrefix(obs.Observation, "indicator:") {
+				a.DangerousInstallScript = true
+				a.HasInstallScriptOrNativeBuild = true
+				parts := strings.Split(obs.Observation, ":")
+				if len(parts) >= 4 && parts[2] == "script" {
+					a.DangerousScriptNames = append(a.DangerousScriptNames, parts[3])
+					a.DangerousScriptReasons = append(a.DangerousScriptReasons, fmt.Sprintf("%s indicator in %s", parts[1], parts[3]))
+				}
+			} else if strings.HasPrefix(obs.Observation, "dangerous_script:") {
+				a.DangerousInstallScript = true
+				a.HasInstallScriptOrNativeBuild = true
+				scriptName := strings.TrimPrefix(obs.Observation, "dangerous_script:")
+				a.DangerousScriptNames = append(a.DangerousScriptNames, scriptName)
 			}
 		case evidence.KindReputation:
 			if obs.Observation == "low_popularity" {

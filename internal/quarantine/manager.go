@@ -23,19 +23,21 @@ type QuarantinedEntry struct {
 
 // Config configures the quarantine Manager.
 type Config struct {
-	Store    BlobStore
-	Metadata MetadataStore
-	Limits   ArchiveLimits
-	Clock    func() time.Time
+	Store         BlobStore
+	Metadata      MetadataStore
+	Limits        ArchiveLimits
+	InspectLimits InspectLimits
+	Clock         func() time.Time
 }
 
 // Manager coordinates content-addressed ingestion, double integrity verification,
 // archive safety inspection, and safe pinned release.
 type Manager struct {
-	store    BlobStore
-	metadata MetadataStore
-	limits   ArchiveLimits
-	clock    func() time.Time
+	store         BlobStore
+	metadata      MetadataStore
+	limits        ArchiveLimits
+	inspectLimits InspectLimits
+	clock         func() time.Time
 }
 
 // NewManager constructs a quarantine Manager with validated configuration.
@@ -50,16 +52,25 @@ func NewManager(cfg Config) (*Manager, error) {
 		return nil, err
 	}
 
+	inspectLimits := cfg.InspectLimits
+	if inspectLimits.MaxScriptBytes == 0 {
+		inspectLimits = DefaultInspectLimits()
+	}
+	if err := inspectLimits.Validate(); err != nil {
+		return nil, err
+	}
+
 	clock := cfg.Clock
 	if clock == nil {
 		clock = func() time.Time { return time.Now().UTC() }
 	}
 
 	return &Manager{
-		store:    cfg.Store,
-		metadata: cfg.Metadata,
-		limits:   cfg.Limits,
-		clock:    clock,
+		store:         cfg.Store,
+		metadata:      cfg.Metadata,
+		limits:        cfg.Limits,
+		inspectLimits: inspectLimits,
+		clock:         clock,
 	}, nil
 }
 
@@ -76,6 +87,11 @@ func (m *Manager) Metadata() MetadataStore {
 // Limits returns the active archive inspection limits.
 func (m *Manager) Limits() ArchiveLimits {
 	return m.limits
+}
+
+// InspectLimits returns the active static script inspection limits.
+func (m *Manager) InspectLimits() InspectLimits {
+	return m.inspectLimits
 }
 
 // Ingest streams a package tarball into quarantine and performs the FIRST integrity verification.
@@ -184,10 +200,15 @@ func (m *Manager) Inspect(ctx context.Context, entry *QuarantinedEntry) (*Archiv
 	}
 	defer reader.Close()
 
-	inspection, err := InspectArchive(ctx, reader, m.limits)
+	inspection, err := InspectArchiveWithLimits(ctx, reader, m.limits, m.inspectLimits, nil)
 	if err != nil {
 		_ = m.metadata.UpdateStatus(ctx, entry.Key, StatusBlocked)
 		return nil, err
+	}
+
+	if len(inspection.DangerousScripts) > 0 {
+		_ = m.metadata.UpdateStatus(ctx, entry.Key, StatusBlocked)
+		return inspection, nil
 	}
 
 	_ = m.metadata.UpdateStatus(ctx, entry.Key, StatusInspected)
