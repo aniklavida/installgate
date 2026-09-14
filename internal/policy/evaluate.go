@@ -1,6 +1,9 @@
 package policy
 
-import "github.com/aniklavida/installgate/internal/verdict"
+import (
+	"github.com/aniklavida/installgate/internal/evidence"
+	"github.com/aniklavida/installgate/internal/verdict"
+)
 
 type Profile string
 
@@ -74,4 +77,77 @@ func decision(kind verdict.Kind, ruleID, summary string, degraded bool, signals 
 		Reasons:  []verdict.Reason{{RuleID: ruleID, Summary: summary, SignalKinds: signals}},
 		Degraded: degraded,
 	}
+}
+
+// Assess converts an immutable evidence snapshot into an Assessment purely and deterministically.
+func Assess(snap evidence.Snapshot) Assessment {
+	var a Assessment
+
+	for _, obs := range snap.Observations() {
+		switch obs.Kind {
+		case evidence.KindIntegrity:
+			if obs.Observation == "mismatch" || obs.Observation == "failed" {
+				a.IntegrityMismatch = true
+			}
+		case evidence.KindMalicious:
+			if obs.Observation == "true" || obs.Observation == "malicious" {
+				a.KnownMalicious = true
+			}
+		case evidence.KindVulnerability:
+			if obs.Observation == "above_threshold" || obs.Observation == "critical" || obs.Observation == "high" {
+				a.VulnerabilityAboveThreshold = true
+			} else if obs.Observation == "malicious" {
+				a.KnownMalicious = true
+			}
+		case evidence.KindNameConfusion:
+			if obs.Observation == "confusion_detected" || obs.Observation == "true" {
+				a.StrongNameConfusion = true
+			}
+		case evidence.KindPackageAge:
+			if obs.Observation == "fresh" || obs.Observation == "newborn" {
+				a.NewbornOrFresh = true
+			}
+		case evidence.KindProvenance:
+			if obs.Observation == "changed" || obs.Observation == "unexpected" {
+				a.PublisherOrProvenanceChanged = true
+			}
+		case evidence.KindInstallScript:
+			if obs.Observation == "script_added" {
+				a.InstallScriptAdded = true
+				a.HasInstallScriptOrNativeBuild = true
+			} else if obs.Observation == "present" || obs.Observation == "native_build" {
+				a.HasInstallScriptOrNativeBuild = true
+			}
+		case evidence.KindReputation:
+			if obs.Observation == "low_popularity" {
+				a.LowPopularity = true
+			} else if obs.Observation == "missing_repository" {
+				a.MissingRepository = true
+			}
+		case evidence.KindCache:
+			if obs.Observation == "fresh_allow" {
+				a.FreshCachedAllow = true
+			}
+		case evidence.KindAvailability:
+			if obs.Observation == "unavailable" {
+				a.EvidenceUnavailable = true
+			}
+		}
+
+		if obs.Observation == "unavailable" {
+			a.EvidenceUnavailable = true
+		}
+	}
+
+	if snap.HasUnavailableEvidence() {
+		a.EvidenceUnavailable = true
+	}
+
+	return a
+}
+
+// EvaluateSnapshot applies the deterministic foundation policy to an immutable evidence snapshot.
+// It touches neither the clock nor the network.
+func EvaluateSnapshot(profile Profile, snap evidence.Snapshot) verdict.Decision {
+	return Evaluate(profile, Assess(snap))
 }
