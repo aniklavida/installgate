@@ -12,6 +12,7 @@ const (
 	Metadata    RequestKind = "metadata"
 	Tarball     RequestKind = "tarball"
 	Health      RequestKind = "health"
+	Ready       RequestKind = "ready"
 	Unsupported RequestKind = "unsupported"
 )
 
@@ -33,6 +34,9 @@ func Classify(method, escapedPath string) Route {
 	path := strings.Trim(decoded, "/")
 	if path == "-/installgate/health" {
 		return Route{Kind: Health}
+	}
+	if path == "-/installgate/ready" {
+		return Route{Kind: Ready}
 	}
 	if path == "" || strings.HasPrefix(path, "-/") {
 		return Route{Kind: Unsupported}

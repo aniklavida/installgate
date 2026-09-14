@@ -7,6 +7,7 @@ The repository currently implements and tests:
 - shared verdict and evidence types;
 - a pure deterministic first policy slice;
 - npm metadata and tarball request classification;
+- registry gateway lifecycle, transaction journaling, and atomic npm configuration;
 - a diagnostic command.
 
 The operational registry firewall is planned for v1.0 and is not implemented yet.
