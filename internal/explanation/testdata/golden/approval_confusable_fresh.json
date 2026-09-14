@@ -1,0 +1,43 @@
+{
+  "schema_version": "1",
+  "decision_id": "dec_0b9d79430050420e",
+  "package": "re-act",
+  "version": "0.0.1",
+  "verdict": "approval_required",
+  "degraded": false,
+  "snapshot_id": "sha256:0bc1a5d4bd85563d183555cd573a50b66b5f34387a1e0dcad4bcdeb034b133c4",
+  "reasons": [
+    {
+      "rule_id": "identity.confusable-new",
+      "summary": "a strongly confusing package name is corroborated by package freshness: confusable with target \"react\"",
+      "evidence": [
+        {
+          "kind": "name_confusion",
+          "source": "local_similarity",
+          "observed_value": "confusion_detected:react",
+          "confidence": "high",
+          "retrieved_at": "2026-09-15T12:00:00Z",
+          "fresh_until": "2026-09-16T00:00:00Z",
+          "freshness": "fresh"
+        },
+        {
+          "kind": "package_age",
+          "source": "npm_registry",
+          "observed_value": "fresh",
+          "confidence": "high",
+          "retrieved_at": "2026-09-15T12:00:00Z",
+          "fresh_until": "2026-09-15T12:15:00Z",
+          "freshness": "fresh"
+        }
+      ]
+    }
+  ],
+  "changes": [
+    {
+      "kind": "name_confusion",
+      "summary": "package name confusable with target \"react\""
+    }
+  ],
+  "missing_evidence": [],
+  "next_command": "installgate approve dec_0b9d79430050420e"
+}

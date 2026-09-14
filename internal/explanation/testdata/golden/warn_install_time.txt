@@ -1,0 +1,23 @@
+InstallGate Decision: WARNING
+Decision ID: dec_6a11ed9242cc02fd
+Package:     fsevents@2.3.3
+Snapshot:    sha256:678e3a162935a64e39d8f2d13c01148cad955de6bbafc8129b054eab8270b349
+
+WARNING EVIDENCE:
+  Rule:    execution.install-time
+  Summary: the package can execute install-time code
+  Evidence:
+    - Kind:       install_script
+      Source:     npm_registry
+      Observed:   present
+      Confidence: high
+      Freshness:  fresh (retrieved 2026-09-15T12:00:00Z, fresh until 2026-09-22T12:00:00Z)
+
+MISSING EVIDENCE:
+  none (complete evaluation)
+
+CHANGES DETECTED:
+  none (no unexpected changes observed)
+
+NEXT COMMAND:
+  npm install fsevents@2.3.3

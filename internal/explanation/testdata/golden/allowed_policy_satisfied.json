@@ -1,0 +1,19 @@
+{
+  "schema_version": "1",
+  "decision_id": "dec_5c326812d909557d",
+  "package": "debug",
+  "version": "4.3.4",
+  "verdict": "allow",
+  "degraded": false,
+  "snapshot_id": "sha256:7727f457d6a45bc4c20a06383f1c870844d01a781fcb2576c098a0993edd6cde",
+  "reasons": [
+    {
+      "rule_id": "core.policy-satisfied",
+      "summary": "available evidence satisfies the configured policy",
+      "evidence": null
+    }
+  ],
+  "changes": [],
+  "missing_evidence": [],
+  "next_command": "npm install debug@4.3.4"
+}

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/aniklavida/installgate/internal/explanation"
+	"github.com/aniklavida/installgate/internal/verdict"
 )
 
 const (
@@ -44,6 +48,20 @@ type Config struct {
 	Transport       http.RoundTripper
 	Timeout         time.Duration
 	MaxBodyBytes    int64
+	Evaluator       Evaluator
+	DecisionStore   explanation.DecisionStore
+}
+
+// Evaluator assesses package requests against policy.
+type Evaluator interface {
+	Evaluate(ctx context.Context, pkg, version string) (*explanation.DecisionDocument, error)
+}
+
+// EvaluatorFunc adapts a function to the Evaluator interface.
+type EvaluatorFunc func(ctx context.Context, pkg, version string) (*explanation.DecisionDocument, error)
+
+func (f EvaluatorFunc) Evaluate(ctx context.Context, pkg, version string) (*explanation.DecisionDocument, error) {
+	return f(ctx, pkg, version)
 }
 
 // UpstreamTransport performs round trips to the upstream npm registry
@@ -190,9 +208,11 @@ func (t *UpstreamTransport) buildUpstreamURL(route Route, rawPath string) (*url.
 
 // Handler handles incoming npm registry HTTP requests.
 type Handler struct {
-	transport    *UpstreamTransport
-	timeout      time.Duration
-	maxBodyBytes int64
+	transport     *UpstreamTransport
+	timeout       time.Duration
+	maxBodyBytes  int64
+	evaluator     Evaluator
+	decisionStore explanation.DecisionStore
 }
 
 // NewHandler constructs a gateway Handler.
@@ -202,9 +222,11 @@ func NewHandler(cfg Config) (*Handler, error) {
 		return nil, err
 	}
 	return &Handler{
-		transport:    upstreamTransport,
-		timeout:      upstreamTransport.timeout,
-		maxBodyBytes: upstreamTransport.maxBodyBytes,
+		transport:     upstreamTransport,
+		timeout:       upstreamTransport.timeout,
+		maxBodyBytes:  upstreamTransport.maxBodyBytes,
+		evaluator:     cfg.Evaluator,
+		decisionStore: cfg.DecisionStore,
 	}, nil
 }
 
@@ -240,6 +262,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, h.timeout)
 		defer cancel()
+	}
+
+	if h.evaluator != nil && route.Package != "" {
+		doc, err := h.evaluator.Evaluate(ctx, route.Package, route.Version)
+		if err != nil {
+			http.Error(w, "bad gateway: policy evaluation error", http.StatusBadGateway)
+			return
+		}
+		if doc != nil && (doc.Verdict == verdict.Block || doc.Verdict == verdict.ApprovalRequired) {
+			if h.decisionStore != nil {
+				_ = h.decisionStore.Save(doc)
+			}
+			WriteBlockedResponse(w, doc)
+			return
+		}
 	}
 
 	resp, err := h.transport.RoundTrip(ctx, route, req)
@@ -376,4 +413,22 @@ func sanitizeRoundTripError(err error, ctx context.Context) error {
 		return errClientCancelled
 	}
 	return errConnectionFailed
+}
+
+// WriteBlockedResponse formats and writes a 403 Forbidden response surfacing the decision ID.
+func WriteBlockedResponse(w http.ResponseWriter, doc *explanation.DecisionDocument) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-InstallGate-Decision", doc.DecisionID)
+	w.Header().Set("X-InstallGate-Verdict", string(doc.Verdict))
+	w.WriteHeader(http.StatusForbidden)
+
+	errMsg := fmt.Sprintf("InstallGate: installation %s for %s@%s (decision: %s). Run 'installgate explain %s' to view reasons and next steps.",
+		doc.Verdict, doc.Package, doc.Version, doc.DecisionID, doc.DecisionID)
+
+	payload := map[string]string{
+		"error":       errMsg,
+		"decision_id": doc.DecisionID,
+		"verdict":     string(doc.Verdict),
+	}
+	_ = json.NewEncoder(w).Encode(payload)
 }
