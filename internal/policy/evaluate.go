@@ -1,6 +1,9 @@
 package policy
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/aniklavida/installgate/internal/evidence"
 	"github.com/aniklavida/installgate/internal/verdict"
 )
@@ -25,10 +28,15 @@ type Assessment struct {
 	FreshCachedAllow              bool
 	LowPopularity                 bool
 	MissingRepository             bool
+	PackageNotFound               bool
+	ConfusedWith                  string
 }
 
 // Evaluate applies the current deterministic foundation policy.
 func Evaluate(profile Profile, a Assessment) verdict.Decision {
+	if a.PackageNotFound {
+		return decision(verdict.Block, "registry.package-not-found", "package or version does not exist in the registry", false, "publish_history")
+	}
 	if a.IntegrityMismatch || a.KnownMalicious {
 		return decision(verdict.Block, "core.integrity-or-malicious", "integrity mismatch or known malicious evidence", false, "integrity", "malicious")
 	}
@@ -45,10 +53,14 @@ func Evaluate(profile Profile, a Assessment) verdict.Decision {
 		return decision(verdict.ApprovalRequired, "availability.no-cache", "required evidence is unavailable and no usable cached allow exists", true, "availability")
 	}
 	if a.StrongNameConfusion && a.NewbornOrFresh {
-		if profile == Strict {
-			return decision(verdict.Block, "identity.confusable-new", "a strongly confusing package name is corroborated by package freshness", false, "name_confusion", "package_age")
+		summary := "a strongly confusing package name is corroborated by package freshness"
+		if a.ConfusedWith != "" {
+			summary = fmt.Sprintf("a strongly confusing package name is corroborated by package freshness: confusable with target %q", a.ConfusedWith)
 		}
-		return decision(verdict.ApprovalRequired, "identity.confusable-new", "a strongly confusing package name is corroborated by package freshness", false, "name_confusion", "package_age")
+		if profile == Strict {
+			return decision(verdict.Block, "identity.confusable-new", summary, false, "name_confusion", "package_age")
+		}
+		return decision(verdict.ApprovalRequired, "identity.confusable-new", summary, false, "name_confusion", "package_age")
 	}
 	if a.PublisherOrProvenanceChanged && a.InstallScriptAdded {
 		if profile == Strict {
@@ -100,12 +112,24 @@ func Assess(snap evidence.Snapshot) Assessment {
 				a.KnownMalicious = true
 			}
 		case evidence.KindNameConfusion:
-			if obs.Observation == "confusion_detected" || obs.Observation == "true" {
+			if obs.Observation == "confusion_detected" || obs.Observation == "true" || strings.HasPrefix(obs.Observation, "confusion_detected:") {
 				a.StrongNameConfusion = true
+				if strings.HasPrefix(obs.Observation, "confusion_detected:") {
+					a.ConfusedWith = strings.TrimPrefix(obs.Observation, "confusion_detected:")
+				}
+			}
+			if strings.HasPrefix(obs.Observation, "target:") {
+				a.ConfusedWith = strings.TrimPrefix(obs.Observation, "target:")
+			}
+		case evidence.KindPublishHistory:
+			if obs.Observation == "not_found" || obs.Observation == "package_not_found" || obs.Observation == "version_not_found" {
+				a.PackageNotFound = true
 			}
 		case evidence.KindPackageAge:
 			if obs.Observation == "fresh" || obs.Observation == "newborn" {
 				a.NewbornOrFresh = true
+			} else if obs.Observation == "not_found" {
+				a.PackageNotFound = true
 			}
 		case evidence.KindProvenance:
 			if obs.Observation == "changed" || obs.Observation == "unexpected" {
