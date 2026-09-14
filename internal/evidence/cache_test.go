@@ -116,3 +116,41 @@ func TestCachedAllowDistinguishesFreshFromStale(t *testing.T) {
 		t.Fatal("cached allow at +7h must be expired and not returned")
 	}
 }
+
+func TestMemoryCacheFreshnessStats(t *testing.T) {
+	c := NewMemoryCache()
+	baseTime := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+
+	// Empty cache
+	stats := c.FreshnessStats(baseTime)
+	if stats.TotalEntries != 0 || stats.FreshEntries != 0 || stats.StaleEntries != 0 {
+		t.Fatalf("expected 0 stats, got %+v", stats)
+	}
+
+	// Add 1 fresh evidence, 1 stale evidence
+	freshOutcome := NewAvailableOutcome(KindVulnerability, "osv", nil, baseTime, baseTime.Add(1*time.Hour))
+	c.Put("pkg-a", "1.0.0", freshOutcome, baseTime.Add(5*time.Hour))
+
+	staleOutcome := NewAvailableOutcome(KindIntegrity, "npm", nil, baseTime.Add(-2*time.Hour), baseTime.Add(-1*time.Hour))
+	c.Put("pkg-b", "1.0.0", staleOutcome, baseTime.Add(3*time.Hour))
+
+	// Add 1 fresh cached allow
+	c.PutCachedAllow("pkg-c", "1.0.0", verdict.Decision{Verdict: verdict.Allow}, "snap-1", baseTime, baseTime.Add(30*time.Minute), baseTime.Add(6*time.Hour))
+
+	stats = c.FreshnessStats(baseTime)
+	if stats.TotalEntries != 3 {
+		t.Errorf("expected 3 total entries, got %d", stats.TotalEntries)
+	}
+	if stats.FreshEntries != 2 {
+		t.Errorf("expected 2 fresh entries (1 evidence + 1 allow), got %d", stats.FreshEntries)
+	}
+	if stats.StaleEntries != 1 {
+		t.Errorf("expected 1 stale entry, got %d", stats.StaleEntries)
+	}
+	if stats.OldestEntry == nil || !stats.OldestEntry.Equal(baseTime.Add(-2*time.Hour)) {
+		t.Errorf("unexpected oldest entry: %v", stats.OldestEntry)
+	}
+	if stats.NewestEntry == nil || !stats.NewestEntry.Equal(baseTime) {
+		t.Errorf("unexpected newest entry: %v", stats.NewestEntry)
+	}
+}

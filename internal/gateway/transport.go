@@ -56,6 +56,7 @@ type Config struct {
 	DecisionStore     explanation.DecisionStore
 	Quarantine        *quarantine.Manager
 	IntegrityResolver quarantine.IntegrityResolver
+	Cache             evidence.Cache
 }
 
 // Evaluator assesses package requests against policy.
@@ -222,6 +223,7 @@ type Handler struct {
 	quarantine        *quarantine.Manager
 	integrityIndex    *quarantine.IntegrityIndex
 	integrityResolver quarantine.IntegrityResolver
+	cache             evidence.Cache
 }
 
 // NewHandler constructs a gateway Handler.
@@ -246,6 +248,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 		quarantine:        cfg.Quarantine,
 		integrityIndex:    integrityIndex,
 		integrityResolver: resolver,
+		cache:             cfg.Cache,
 	}, nil
 }
 
@@ -271,7 +274,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		if req.Method != http.MethodHead {
-			_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
+			resp := map[string]any{
+				"status": "ok",
+				"ready":  true,
+			}
+			if h.cache != nil {
+				resp["cache"] = h.cache.FreshnessStats(time.Now())
+			} else {
+				resp["cache"] = evidence.CacheStats{}
+			}
+			data, _ := json.Marshal(resp)
+			_, _ = w.Write(append(data, '\n'))
+		}
+		return
+	}
+
+	if route.Kind == Ready {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		if req.Method != http.MethodHead {
+			resp := map[string]any{
+				"status": "ok",
+				"ready":  true,
+			}
+			data, _ := json.Marshal(resp)
+			_, _ = w.Write(append(data, '\n'))
 		}
 		return
 	}

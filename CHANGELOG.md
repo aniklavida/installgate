@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Canonical open-source repository foundation.
 - Initial deterministic policy types and rules.
 - Initial npm registry request classifier.
+- Registry gateway lifecycle management, atomic npm configuration, and transaction recovery.
 - Public specification, architecture, roadmap, and v1.0 release checklist.
 
 No public version has been released.

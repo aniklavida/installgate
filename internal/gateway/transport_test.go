@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/aniklavida/installgate/internal/evidence"
 )
 
 var accusatoryTerms = []string{
@@ -1064,5 +1066,62 @@ func TestHealthRoute(t *testing.T) {
 	headBody, _ := io.ReadAll(headResp.Body)
 	if len(headBody) != 0 {
 		t.Errorf("expected empty body for HEAD, got %d bytes", len(headBody))
+	}
+}
+
+func TestHealthAndReadinessWithCacheFreshness(t *testing.T) {
+	cache := evidence.NewMemoryCache()
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	freshOutcome := evidence.NewAvailableOutcome(evidence.KindVulnerability, "osv", nil, now, now.Add(1*time.Hour))
+	cache.Put("test-pkg", "1.0.0", freshOutcome, now.Add(5*time.Hour))
+
+	handler, err := NewHandler(Config{
+		Cache: cache,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() failed: %v", err)
+	}
+	gwServer := httptest.NewServer(handler)
+	defer gwServer.Close()
+
+	// 1. Check readiness route
+	readyResp, err := http.Get(gwServer.URL + "/-/installgate/ready")
+	if err != nil {
+		t.Fatalf("GET /-/installgate/ready failed: %v", err)
+	}
+	defer readyResp.Body.Close()
+	if readyResp.StatusCode != http.StatusOK {
+		t.Fatalf("got ready status %d, want 200", readyResp.StatusCode)
+	}
+	var readyBody map[string]any
+	if err := json.NewDecoder(readyResp.Body).Decode(&readyBody); err != nil {
+		t.Fatalf("failed to parse ready JSON: %v", err)
+	}
+	if readyBody["status"] != "ok" || readyBody["ready"] != true {
+		t.Errorf("unexpected ready body: %+v", readyBody)
+	}
+
+	// 2. Check health route with cache freshness
+	healthResp, err := http.Get(gwServer.URL + "/-/installgate/health")
+	if err != nil {
+		t.Fatalf("GET /-/installgate/health failed: %v", err)
+	}
+	defer healthResp.Body.Close()
+	if healthResp.StatusCode != http.StatusOK {
+		t.Fatalf("got health status %d, want 200", healthResp.StatusCode)
+	}
+	var healthBody struct {
+		Status string              `json:"status"`
+		Ready  bool                `json:"ready"`
+		Cache  evidence.CacheStats `json:"cache"`
+	}
+	if err := json.NewDecoder(healthResp.Body).Decode(&healthBody); err != nil {
+		t.Fatalf("failed to parse health JSON: %v", err)
+	}
+	if healthBody.Status != "ok" || !healthBody.Ready {
+		t.Errorf("unexpected health status/ready: %+v", healthBody)
+	}
+	if healthBody.Cache.TotalEntries != 1 || healthBody.Cache.FreshEntries != 1 {
+		t.Errorf("unexpected cache freshness stats: %+v", healthBody.Cache)
 	}
 }
