@@ -68,6 +68,14 @@ func DefaultFreshnessConfigs() map[string]FreshnessConfig {
 			FreshTTL: 15 * time.Minute,
 			StaleTTL: 12 * time.Hour,
 		},
+		KindPackageAge: {
+			FreshTTL: 15 * time.Minute,
+			StaleTTL: 12 * time.Hour,
+		},
+		KindMalicious: {
+			FreshTTL: 1 * time.Hour,
+			StaleTTL: 24 * time.Hour,
+		},
 		KindIntegrity: {
 			FreshTTL: 24 * time.Hour,
 			StaleTTL: 7 * 24 * time.Hour,
