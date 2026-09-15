@@ -19,6 +19,8 @@ import (
 	"github.com/aniklavida/installgate/internal/explanation"
 	"github.com/aniklavida/installgate/internal/gateway"
 	"github.com/aniklavida/installgate/internal/policy"
+	"github.com/aniklavida/installgate/internal/store"
+	"github.com/aniklavida/installgate/internal/verdict"
 )
 
 func runStart(args []string) {
@@ -93,8 +95,20 @@ func runServerForeground(port int, upstream, dataDir string) {
 		_ = os.Remove(pidFile)
 	}()
 
+	dbPath := filepath.Join(dataDir, "installgate.db")
+	dbStore, err := store.OpenSQLite(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "installgate: failed to initialize database: %v\n", err)
+		os.Exit(1)
+	}
+	defer dbStore.Close()
+
+	if err := dbStore.ApplyMigrations(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "installgate: failed to apply migrations: %v\n", err)
+		os.Exit(1)
+	}
+
 	cache := evidence.NewMemoryCache()
-	store := explanation.DefaultStore()
 
 	// Load repository-local policy if present; otherwise default balanced policy
 	pol, err := policy.LoadDefaultPolicy(".")
@@ -113,13 +127,44 @@ func runServerForeground(port int, upstream, dataDir string) {
 			return nil, err
 		}
 		dec := pol.EvaluateSnapshot(snap)
-		return explanation.NewDecisionDocument(pkg, version, dec, snap)
+
+		// Check for active human approval when policy requires approval
+		if dec.Verdict == verdict.ApprovalRequired {
+			if app, ok, _ := dbStore.FindActiveApproval(ctx, pkg, version, time.Now().UTC()); ok && app != nil {
+				dec.Verdict = verdict.Allow
+				dec.Reasons = append(dec.Reasons, verdict.Reason{
+					RuleID:  "approval.granted",
+					Summary: fmt.Sprintf("active human approval (%s) granted by %s: %s", app.ID, app.Actor, app.Reason),
+				})
+			}
+		}
+
+		doc, err := explanation.NewDecisionDocument(pkg, version, dec, snap)
+		if err == nil && doc != nil {
+			_ = dbStore.SaveDecision(ctx, doc)
+			ruleID := ""
+			if len(dec.Reasons) > 0 {
+				ruleID = dec.Reasons[0].RuleID
+			}
+			_ = dbStore.AppendAudit(ctx, &store.AuditEvent{
+				EventTime:  time.Now().UTC(),
+				EventType:  "decision",
+				Package:    pkg,
+				Version:    version,
+				DecisionID: doc.DecisionID,
+				RuleID:     ruleID,
+				Verdict:    string(doc.Verdict),
+				Actor:      "gateway",
+				Snapshot:   &snap,
+			})
+		}
+		return doc, err
 	})
 
 	handler, err := gateway.NewHandler(gateway.Config{
 		UpstreamBaseURL: upstream,
 		Evaluator:       evaluator,
-		DecisionStore:   store,
+		DecisionStore:   dbStore,
 		Cache:           cache,
 	})
 	if err != nil {

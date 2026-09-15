@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -435,5 +436,166 @@ func TestCLI_FullLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "npm registry:     disabled") {
 		t.Errorf("status should be disabled after disable: %s", string(out))
+	}
+}
+
+func TestCLI_ApprovalsAndAudit(t *testing.T) {
+	bin := buildBinary(t)
+	dataDir := t.TempDir()
+	env := append(os.Environ(), "INSTALLGATE_DATA_DIR="+dataDir)
+
+	// 1. Create approval
+	approveCmd := exec.Command(bin, "approve", "express", "--version", "4.18.2", "--reason", "audited safe", "--duration", "48h")
+	approveCmd.Env = env
+	out, err := approveCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approve failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "Approval created:") || !strings.Contains(string(out), "express@4.18.2") {
+		t.Fatalf("unexpected approve output: %s", string(out))
+	}
+
+	// 2. List approvals (human table)
+	listCmd := exec.Command(bin, "approvals")
+	listCmd.Env = env
+	out, err = listCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approvals list failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "express") || !strings.Contains(string(out), "audited safe") {
+		t.Fatalf("unexpected approvals list: %s", string(out))
+	}
+
+	// 3. List approvals (JSON)
+	jsonCmd := exec.Command(bin, "approvals", "--json")
+	jsonCmd.Env = env
+	out, err = jsonCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approvals --json failed: %v\noutput: %s", err, string(out))
+	}
+	var apps []map[string]any
+	if err := json.Unmarshal(out, &apps); err != nil || len(apps) != 1 {
+		t.Fatalf("failed unmarshaling approvals JSON: %v (len=%d)", err, len(apps))
+	}
+	appID, _ := apps[0]["id"].(string)
+	if appID == "" {
+		t.Fatal("missing approval id in JSON output")
+	}
+
+	// 4. View audit trail (human and JSON)
+	auditCmd := exec.Command(bin, "audit")
+	auditCmd.Env = env
+	out, err = auditCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("audit failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "approval_created") {
+		t.Fatalf("audit output missing approval_created: %s", string(out))
+	}
+
+	auditJSONCmd := exec.Command(bin, "audit", "--json")
+	auditJSONCmd.Env = env
+	out, err = auditJSONCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("audit --json failed: %v\noutput: %s", err, string(out))
+	}
+	var auditEvents []map[string]any
+	if err := json.Unmarshal(out, &auditEvents); err != nil || len(auditEvents) == 0 {
+		t.Fatalf("failed unmarshaling audit JSON: %v (len=%d)", err, len(auditEvents))
+	}
+
+	// 5. Revoke approval
+	revokeCmd := exec.Command(bin, "revoke", appID)
+	revokeCmd.Env = env
+	out, err = revokeCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("revoke failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "revoked") {
+		t.Fatalf("unexpected revoke output: %s", string(out))
+	}
+
+	// 6. Verify revoked status in listing
+	listAfterRevoke := exec.Command(bin, "approvals")
+	listAfterRevoke.Env = env
+	out, err = listAfterRevoke.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approvals list failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[revoked]") {
+		t.Fatalf("expected revoked status: %s", string(out))
+	}
+}
+
+func TestCLI_BackupRestoreAndCache(t *testing.T) {
+	bin := buildBinary(t)
+	dataDir := t.TempDir()
+	backupDir := t.TempDir()
+	backupFile := filepath.Join(backupDir, "ig_backup.db")
+	env := append(os.Environ(), "INSTALLGATE_DATA_DIR="+dataDir)
+
+	// Create an approval to populate database
+	approveCmd := exec.Command(bin, "approve", "lodash", "--version", "4.17.21", "--reason", "cli backup test")
+	approveCmd.Env = env
+	out, err := approveCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approve failed: %v\noutput: %s", err, string(out))
+	}
+
+	// Backup database
+	backupCmd := exec.Command(bin, "backup", backupFile)
+	backupCmd.Env = env
+	out, err = backupCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("backup failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "Database backup written") {
+		t.Fatalf("unexpected backup output: %s", string(out))
+	}
+	if _, err := os.Stat(backupFile); err != nil {
+		t.Fatalf("backup file not created: %v", err)
+	}
+
+	// Cache operations
+	cacheClearCmd := exec.Command(bin, "cache", "clear")
+	cacheClearCmd.Env = env
+	out, err = cacheClearCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cache clear failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "cleared") {
+		t.Fatalf("unexpected cache clear output: %s", string(out))
+	}
+
+	cacheRebuildCmd := exec.Command(bin, "cache", "rebuild")
+	cacheRebuildCmd.Env = env
+	out, err = cacheRebuildCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cache rebuild failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "rebuilt") {
+		t.Fatalf("unexpected cache rebuild output: %s", string(out))
+	}
+
+	// Restore database
+	restoreCmd := exec.Command(bin, "restore", backupFile)
+	restoreCmd.Env = env
+	out, err = restoreCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restore failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "restored") {
+		t.Fatalf("unexpected restore output: %s", string(out))
+	}
+
+	// Verify approval exists after restore
+	listCmd := exec.Command(bin, "approvals")
+	listCmd.Env = env
+	out, err = listCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approvals failed after restore: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "lodash") {
+		t.Fatalf("restored approval missing: %s", string(out))
 	}
 }
