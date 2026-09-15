@@ -599,3 +599,460 @@ func TestCLI_BackupRestoreAndCache(t *testing.T) {
 		t.Fatalf("restored approval missing: %s", string(out))
 	}
 }
+
+func TestCLI_Check_HumanAndJSON(t *testing.T) {
+	bin := buildBinary(t)
+	dataDir := t.TempDir()
+	env := append(os.Environ(), "INSTALLGATE_DATA_DIR="+dataDir)
+
+	// 1. Check clean package human output
+	checkCmd := exec.Command(bin, "check", "left-pad@1.3.0")
+	checkCmd.Env = env
+	out, err := checkCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("check failed: %v\noutput: %s", err, string(out))
+	}
+	outStr := string(out)
+	if !strings.Contains(outStr, "InstallGate Decision: ALLOWED") {
+		t.Errorf("expected ALLOWED in human check output: %s", outStr)
+	}
+	if !strings.Contains(outStr, "left-pad@1.3.0") {
+		t.Errorf("expected package@version in output: %s", outStr)
+	}
+
+	// 2. Check clean package JSON output
+	checkJSONCmd := exec.Command(bin, "check", "left-pad@1.3.0", "--json")
+	checkJSONCmd.Env = env
+	jsonOut, err := checkJSONCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("check --json failed: %v\noutput: %s", err, string(jsonOut))
+	}
+	doc, err := explanation.ParseJSON(jsonOut)
+	if err != nil {
+		t.Fatalf("failed parsing check JSON output: %v\noutput: %s", err, string(jsonOut))
+	}
+	if doc.Package != "left-pad" || doc.Version != "1.3.0" {
+		t.Errorf("doc package@version = %s@%s, want left-pad@1.3.0", doc.Package, doc.Version)
+	}
+	if doc.Verdict != verdict.Allow {
+		t.Errorf("doc verdict = %q, want allow", doc.Verdict)
+	}
+
+	// 3. Check with --version flag format
+	checkPkg2 := exec.Command(bin, "check", "express", "--version", "4.18.2", "--json")
+	checkPkg2.Env = env
+	pkg2JSONOut, err := checkPkg2.CombinedOutput()
+	if err != nil {
+		t.Fatalf("check with --version failed: %v\noutput: %s", err, string(pkg2JSONOut))
+	}
+	doc2, err := explanation.ParseJSON(pkg2JSONOut)
+	if err != nil {
+		t.Fatalf("failed parsing check JSON output: %v\noutput: %s", err, string(pkg2JSONOut))
+	}
+	if doc2.Package != "express" || doc2.Version != "4.18.2" {
+		t.Errorf("doc package@version = %s@%s, want express@4.18.2", doc2.Package, doc2.Version)
+	}
+	if doc2.Verdict != verdict.Allow {
+		t.Errorf("doc2 verdict = %q, want allow", doc2.Verdict)
+	}
+}
+
+func TestCLI_Deny_HumanAndJSON(t *testing.T) {
+	bin := buildBinary(t)
+	dataDir := t.TempDir()
+	env := append(os.Environ(), "INSTALLGATE_DATA_DIR="+dataDir)
+
+	// Create an active approval
+	approveCmd := exec.Command(bin, "approve", "suspect-pkg", "--version", "1.0.0", "--reason", "tentative approval")
+	approveCmd.Env = env
+	if out, err := approveCmd.CombinedOutput(); err != nil {
+		t.Fatalf("approve failed: %v\noutput: %s", err, string(out))
+	}
+
+	// 1. Run deny human output
+	denyCmd := exec.Command(bin, "deny", "suspect-pkg", "--version", "1.0.0", "--reason", "malware confirmed")
+	denyCmd.Env = env
+	denyOut, err := denyCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("deny failed: %v\noutput: %s", err, string(denyOut))
+	}
+	denyStr := string(denyOut)
+	if !strings.Contains(denyStr, "Denial recorded: suspect-pkg@1.0.0") {
+		t.Errorf("unexpected deny output: %s", denyStr)
+	}
+	if !strings.Contains(denyStr, "Revoked 1 active approval(s)") {
+		t.Errorf("expected revoked active approval in deny output: %s", denyStr)
+	}
+
+	// Verify approval list shows no active approvals
+	listCmd := exec.Command(bin, "approvals", "--active", "--json")
+	listCmd.Env = env
+	listOut, err := listCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approvals list failed: %v\noutput: %s", err, string(listOut))
+	}
+	var activeApps []map[string]any
+	if err := json.Unmarshal(listOut, &activeApps); err != nil {
+		t.Fatalf("failed unmarshaling active approvals: %v", err)
+	}
+	if len(activeApps) != 0 {
+		t.Errorf("expected 0 active approvals, got %d", len(activeApps))
+	}
+
+	// 2. Run deny JSON output
+	denyJSONCmd := exec.Command(bin, "deny", "malicious-lib@3.0.0", "--reason", "known cve", "--json")
+	denyJSONCmd.Env = env
+	denyJSONOut, err := denyJSONCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("deny --json failed: %v\noutput: %s", err, string(denyJSONOut))
+	}
+	var denyMap map[string]any
+	if err := json.Unmarshal(denyJSONOut, &denyMap); err != nil {
+		t.Fatalf("failed unmarshaling deny JSON: %v\noutput: %s", err, string(denyJSONOut))
+	}
+	if denyMap["action"] != "deny" || denyMap["package"] != "malicious-lib" || denyMap["version"] != "3.0.0" {
+		t.Errorf("unexpected deny JSON fields: %+v", denyMap)
+	}
+	if denyMap["verdict"] != "block" {
+		t.Errorf("unexpected verdict in deny JSON: %v", denyMap["verdict"])
+	}
+
+	// 3. Verify audit trail contains decision_denied events
+	auditCmd := exec.Command(bin, "audit", "--json")
+	auditCmd.Env = env
+	auditOut, err := auditCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("audit --json failed: %v\noutput: %s", err, string(auditOut))
+	}
+	var auditList []map[string]any
+	if err := json.Unmarshal(auditOut, &auditList); err != nil {
+		t.Fatalf("failed unmarshaling audit JSON: %v", err)
+	}
+	var foundDenied bool
+	for _, ev := range auditList {
+		if ev["event_type"] == "decision_denied" && ev["package"] == "suspect-pkg" {
+			foundDenied = true
+			break
+		}
+	}
+	if !foundDenied {
+		t.Errorf("decision_denied audit event not found for suspect-pkg in audit trail: %s", string(auditOut))
+	}
+}
+
+func TestCLI_Policy_HumanAndJSON(t *testing.T) {
+	bin := buildBinary(t)
+	tempDir := t.TempDir()
+
+	// 1. Policy show human
+	showCmd := exec.Command(bin, "policy")
+	showCmd.Dir = tempDir
+	out, err := showCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("policy failed: %v\noutput: %s", err, string(out))
+	}
+	outStr := string(out)
+	if !strings.Contains(outStr, "InstallGate Policy:") || !strings.Contains(outStr, "Profile:                 balanced") {
+		t.Errorf("unexpected policy show output: %s", outStr)
+	}
+
+	// 2. Policy show JSON
+	showJSONCmd := exec.Command(bin, "policy", "--json")
+	showJSONCmd.Dir = tempDir
+	jsonOut, err := showJSONCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("policy --json failed: %v\noutput: %s", err, string(jsonOut))
+	}
+	var polMap map[string]any
+	if err := json.Unmarshal(jsonOut, &polMap); err != nil {
+		t.Fatalf("failed unmarshaling policy JSON: %v\noutput: %s", err, string(jsonOut))
+	}
+	if polMap["profile"] != "balanced" || polMap["version"] != "1" {
+		t.Errorf("unexpected policy fields: %+v", polMap)
+	}
+
+	// 3. Policy bounds human and JSON
+	boundsCmd := exec.Command(bin, "policy", "bounds")
+	boundsOut, err := boundsCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("policy bounds failed: %v\noutput: %s", err, string(boundsOut))
+	}
+	if !strings.Contains(string(boundsOut), "InstallGate repository policy bounds") {
+		t.Errorf("unexpected policy bounds output: %s", string(boundsOut))
+	}
+
+	boundsJSONCmd := exec.Command(bin, "policy", "bounds", "--json")
+	boundsJSONOut, err := boundsJSONCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("policy bounds --json failed: %v\noutput: %s", err, string(boundsJSONOut))
+	}
+	var boundsMap map[string]string
+	if err := json.Unmarshal(boundsJSONOut, &boundsMap); err != nil || !strings.Contains(boundsMap["bounds"], "InstallGate repository policy bounds") {
+		t.Errorf("unexpected policy bounds JSON: %v", boundsMap)
+	}
+
+	// 4. Policy validate valid file
+	validYAML := `version: "1"
+profile: "strict"
+vulnerability_threshold: "low"
+`
+	validPath := filepath.Join(tempDir, "installgate.yaml")
+	if err := os.WriteFile(validPath, []byte(validYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	valCmd := exec.Command(bin, "policy", "validate", validPath)
+	valOut, err := valCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("policy validate failed: %v\noutput: %s", err, string(valOut))
+	}
+	if !strings.Contains(string(valOut), "is valid") {
+		t.Errorf("unexpected validate output: %s", string(valOut))
+	}
+
+	valJSONCmd := exec.Command(bin, "policy", "validate", validPath, "--json")
+	valJSONOut, err := valJSONCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("policy validate --json failed: %v\noutput: %s", err, string(valJSONOut))
+	}
+	var valMap map[string]any
+	if err := json.Unmarshal(valJSONOut, &valMap); err != nil || valMap["valid"] != true {
+		t.Errorf("unexpected validate JSON output: %+v", valMap)
+	}
+
+	// 5. Policy validate invalid file
+	invalidYAML := `version: "2"
+profile: "unsupported-profile"
+`
+	invalidPath := filepath.Join(tempDir, "invalid.yaml")
+	if err := os.WriteFile(invalidPath, []byte(invalidYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	invCmd := exec.Command(bin, "policy", "validate", invalidPath)
+	invOut, err := invCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected validation failure for invalid policy file, got nil\noutput: %s", string(invOut))
+	}
+
+	invJSONCmd := exec.Command(bin, "policy", "validate", invalidPath, "--json")
+	invJSONOut, err := invJSONCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected validation failure exit code for invalid policy JSON, got nil\noutput: %s", string(invJSONOut))
+	}
+	var invMap map[string]any
+	if err := json.Unmarshal(invJSONOut, &invMap); err != nil || invMap["valid"] != false {
+		t.Errorf("unexpected invalid validate JSON: %+v", invMap)
+	}
+}
+
+func TestCLI_DryRun_AllMutatingCommands(t *testing.T) {
+	bin := buildBinary(t)
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "data")
+	env := append(os.Environ(), "INSTALLGATE_DATA_DIR="+dataDir)
+
+	// 1. init --dry-run: data directory must NOT be created
+	initDry := exec.Command(bin, "init", "--dry-run")
+	initDry.Env = env
+	out, err := initDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("init --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("init --dry-run missing [dry-run] tag: %s", string(out))
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Errorf("init --dry-run created data directory: %s", dataDir)
+	}
+
+	// Actually initialize now so subsequent tests have a valid data dir when needed
+	initReal := exec.Command(bin, "init")
+	initReal.Env = env
+	if out, err := initReal.CombinedOutput(); err != nil {
+		t.Fatalf("init failed: %v\noutput: %s", err, string(out))
+	}
+
+	// 2. enable npm --dry-run: .npmrc must NOT be modified
+	npmrcPath := filepath.Join(baseDir, ".npmrc")
+	initialNpmrc := []byte("registry=https://registry.npmjs.org/\n")
+	if err := os.WriteFile(npmrcPath, initialNpmrc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	enableEnv := append(env, "NPM_CONFIG_USERCONFIG="+npmrcPath)
+	enableDry := exec.Command(bin, "enable", "npm", "--dry-run")
+	enableDry.Env = enableEnv
+	out, err = enableDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("enable --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("enable --dry-run missing [dry-run] tag: %s", string(out))
+	}
+	content, _ := os.ReadFile(npmrcPath)
+	if !bytes.Equal(content, initialNpmrc) {
+		t.Errorf("enable --dry-run modified .npmrc:\ngot:  %s\nwant: %s", string(content), string(initialNpmrc))
+	}
+
+	// 3. disable npm --dry-run: .npmrc must NOT be modified
+	disableDry := exec.Command(bin, "disable", "npm", "--dry-run")
+	disableDry.Env = enableEnv
+	out, err = disableDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("disable --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("disable --dry-run missing [dry-run] tag: %s", string(out))
+	}
+	content, _ = os.ReadFile(npmrcPath)
+	if !bytes.Equal(content, initialNpmrc) {
+		t.Errorf("disable --dry-run modified .npmrc:\ngot:  %s\nwant: %s", string(content), string(initialNpmrc))
+	}
+
+	// 4. approve --dry-run: no approval created in store
+	approveDry := exec.Command(bin, "approve", "pkg-a", "--version", "1.0.0", "--dry-run")
+	approveDry.Env = env
+	out, err = approveDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approve --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("approve --dry-run missing [dry-run] tag: %s", string(out))
+	}
+	approveJSONDry := exec.Command(bin, "approve", "pkg-a", "--version", "1.0.0", "--dry-run", "--json")
+	approveJSONDry.Env = env
+	outJSON, err := approveJSONDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approve --dry-run --json failed: %v\noutput: %s", err, string(outJSON))
+	}
+	var appJSONMap map[string]any
+	if err := json.Unmarshal(outJSON, &appJSONMap); err != nil || appJSONMap["dry_run"] != true {
+		t.Errorf("unexpected approve --dry-run JSON: %s", string(outJSON))
+	}
+	listCmd := exec.Command(bin, "approvals", "--json")
+	listCmd.Env = env
+	out, _ = listCmd.CombinedOutput()
+	var apps []any
+	_ = json.Unmarshal(out, &apps)
+	if len(apps) != 0 {
+		t.Errorf("approve --dry-run created an approval in store: %s", string(out))
+	}
+
+	// 5. deny --dry-run: no audit or denial persisted
+	denyDry := exec.Command(bin, "deny", "pkg-b", "--version", "1.0.0", "--dry-run")
+	denyDry.Env = env
+	out, err = denyDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("deny --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("deny --dry-run missing [dry-run] tag: %s", string(out))
+	}
+	denyJSONDry := exec.Command(bin, "deny", "pkg-b", "--version", "1.0.0", "--dry-run", "--json")
+	denyJSONDry.Env = env
+	outJSON, err = denyJSONDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("deny --dry-run --json failed: %v\noutput: %s", err, string(outJSON))
+	}
+	var denyJSONMap map[string]any
+	if err := json.Unmarshal(outJSON, &denyJSONMap); err != nil || denyJSONMap["dry_run"] != true {
+		t.Errorf("unexpected deny --dry-run JSON: %s", string(outJSON))
+	}
+	auditCmd := exec.Command(bin, "audit", "--json")
+	auditCmd.Env = env
+	out, _ = auditCmd.CombinedOutput()
+	if strings.Contains(string(out), "pkg-b") {
+		t.Errorf("deny --dry-run recorded audit event in store: %s", string(out))
+	}
+
+	// 6. revoke --dry-run: prints [dry-run]
+	revokeDry := exec.Command(bin, "revoke", "fake-id", "--dry-run")
+	revokeDry.Env = env
+	out, err = revokeDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("revoke --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("revoke --dry-run missing [dry-run] tag: %s", string(out))
+	}
+
+	// 7. cache clear --dry-run
+	cacheClearDry := exec.Command(bin, "cache", "clear", "--dry-run")
+	cacheClearDry.Env = env
+	out, err = cacheClearDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cache clear --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("cache clear --dry-run missing [dry-run] tag: %s", string(out))
+	}
+
+	// 8. cache rebuild --dry-run
+	cacheRebuildDry := exec.Command(bin, "cache", "rebuild", "--dry-run")
+	cacheRebuildDry.Env = env
+	out, err = cacheRebuildDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cache rebuild --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("cache rebuild --dry-run missing [dry-run] tag: %s", string(out))
+	}
+
+	// 9. backup --dry-run: target file must NOT be created
+	backupDest := filepath.Join(baseDir, "backup-dryrun.db")
+	backupDry := exec.Command(bin, "backup", backupDest, "--dry-run")
+	backupDry.Env = env
+	out, err = backupDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("backup --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("backup --dry-run missing [dry-run] tag: %s", string(out))
+	}
+	if _, err := os.Stat(backupDest); !os.IsNotExist(err) {
+		t.Errorf("backup --dry-run created backup file: %s", backupDest)
+	}
+
+	// 10. restore --dry-run: create a valid backup file to test restore --dry-run
+	realBackup := filepath.Join(baseDir, "real-backup.db")
+	backupCmd := exec.Command(bin, "backup", realBackup)
+	backupCmd.Env = env
+	if out, err := backupCmd.CombinedOutput(); err != nil {
+		t.Fatalf("real backup failed: %v\noutput: %s", err, string(out))
+	}
+	restoreDry := exec.Command(bin, "restore", realBackup, "--dry-run")
+	restoreDry.Env = env
+	out, err = restoreDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restore --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("restore --dry-run missing [dry-run] tag: %s", string(out))
+	}
+
+	// 11. start --dry-run: no PID file must be created
+	startDry := exec.Command(bin, "start", "--dry-run")
+	startDry.Env = env
+	out, err = startDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("start --dry-run missing [dry-run] tag: %s", string(out))
+	}
+	pidFile := filepath.Join(dataDir, "installgate.pid")
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Errorf("start --dry-run created PID file: %s", pidFile)
+	}
+
+	// 12. stop --dry-run: prints [dry-run]
+	stopDry := exec.Command(bin, "stop", "--dry-run")
+	stopDry.Env = env
+	out, err = stopDry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("stop --dry-run failed: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "[dry-run]") {
+		t.Errorf("stop --dry-run missing [dry-run] tag: %s", string(out))
+	}
+}
