@@ -16,16 +16,15 @@ import (
 
 	"github.com/aniklavida/installgate/internal/config"
 	"github.com/aniklavida/installgate/internal/evidence"
-	"github.com/aniklavida/installgate/internal/explanation"
 	"github.com/aniklavida/installgate/internal/gateway"
 	"github.com/aniklavida/installgate/internal/policy"
 	"github.com/aniklavida/installgate/internal/store"
-	"github.com/aniklavida/installgate/internal/verdict"
 )
 
 func runStart(args []string) {
 	var (
 		foreground bool
+		dryRun     bool
 		port       = config.DefaultGatewayPort
 		upstream   = gateway.DefaultUpstreamURL
 	)
@@ -42,6 +41,8 @@ func runStart(args []string) {
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--dry-run":
+			dryRun = true
 		case "--foreground", "-f":
 			foreground = true
 		case "--port":
@@ -67,6 +68,11 @@ func runStart(args []string) {
 			startUsage()
 			os.Exit(2)
 		}
+	}
+
+	if dryRun {
+		fmt.Printf("[dry-run] Would start InstallGate gateway on http://127.0.0.1:%d (upstream: %s)\n", port, upstream)
+		return
 	}
 
 	dataDir := getDataDir()
@@ -121,49 +127,16 @@ func runServerForeground(port int, upstream, dataDir string) {
 		evidence.WithFreshnessPolicy(evidence.DefaultFreshnessPolicy()),
 	)
 
-	evaluator := gateway.EvaluatorFunc(func(ctx context.Context, pkg, version string) (*explanation.DecisionDocument, error) {
-		snap, err := assembler.Assemble(ctx, pkg, version)
-		if err != nil {
-			return nil, err
-		}
-		dec := pol.EvaluateSnapshot(snap)
-
-		// Check for active human approval when policy requires approval
-		if dec.Verdict == verdict.ApprovalRequired {
-			if app, ok, _ := dbStore.FindActiveApproval(ctx, pkg, version, time.Now().UTC()); ok && app != nil {
-				dec.Verdict = verdict.Allow
-				dec.Reasons = append(dec.Reasons, verdict.Reason{
-					RuleID:  "approval.granted",
-					Summary: fmt.Sprintf("active human approval (%s) granted by %s: %s", app.ID, app.Actor, app.Reason),
-				})
-			}
-		}
-
-		doc, err := explanation.NewDecisionDocument(pkg, version, dec, snap)
-		if err == nil && doc != nil {
-			_ = dbStore.SaveDecision(ctx, doc)
-			ruleID := ""
-			if len(dec.Reasons) > 0 {
-				ruleID = dec.Reasons[0].RuleID
-			}
-			_ = dbStore.AppendAudit(ctx, &store.AuditEvent{
-				EventTime:  time.Now().UTC(),
-				EventType:  "decision",
-				Package:    pkg,
-				Version:    version,
-				DecisionID: doc.DecisionID,
-				RuleID:     ruleID,
-				Verdict:    string(doc.Verdict),
-				Actor:      "gateway",
-				Snapshot:   &snap,
-			})
-		}
-		return doc, err
+	engine := gateway.NewEngine(gateway.EngineConfig{
+		Policy:    pol,
+		Assembler: assembler,
+		Store:     dbStore,
+		Actor:     "gateway",
 	})
 
 	handler, err := gateway.NewHandler(gateway.Config{
 		UpstreamBaseURL: upstream,
-		Evaluator:       evaluator,
+		Evaluator:       engine,
 		DecisionStore:   dbStore,
 		Cache:           cache,
 	})
@@ -253,7 +226,13 @@ func runServerDaemon(port int, upstream, dataDir string) {
 	fmt.Printf("InstallGate gateway started on http://127.0.0.1:%d (pid %d)\n", port, cmd.Process.Pid)
 }
 
-func runStop() {
+func runStop(args []string) {
+	for _, arg := range args {
+		if arg == "--dry-run" {
+			fmt.Println("[dry-run] Would stop InstallGate gateway process")
+			return
+		}
+	}
 	dataDir := getDataDir()
 	pidFile := filepath.Join(dataDir, "installgate.pid")
 
@@ -315,5 +294,5 @@ func getDataDir() string {
 }
 
 func startUsage() {
-	fmt.Fprintln(os.Stderr, "usage: installgate start [--foreground|-f] [--port <port>] [--upstream <url>]")
+	fmt.Fprintln(os.Stderr, "usage: installgate start [--foreground|-f] [--port <port>] [--upstream <url>] [--dry-run]")
 }

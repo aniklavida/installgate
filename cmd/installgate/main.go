@@ -12,7 +12,11 @@ import (
 	"time"
 
 	"github.com/aniklavida/installgate/internal/config"
+	"github.com/aniklavida/installgate/internal/evidence"
 	"github.com/aniklavida/installgate/internal/explanation"
+	"github.com/aniklavida/installgate/internal/gateway"
+	"github.com/aniklavida/installgate/internal/mcpserver"
+	"github.com/aniklavida/installgate/internal/policy"
 	"github.com/aniklavida/installgate/internal/store"
 	"github.com/aniklavida/installgate/internal/verdict"
 )
@@ -31,7 +35,7 @@ func main() {
 	case "start":
 		runStart(os.Args[2:])
 	case "stop":
-		runStop()
+		runStop(os.Args[2:])
 	case "enable":
 		runEnable(os.Args[2:])
 	case "disable":
@@ -50,10 +54,16 @@ func main() {
 			os.Exit(2)
 		}
 		fmt.Printf("InstallGate foundation: OK\nGo: %s\nPlatform: %s/%s\nRegistry gateway: planned for v1.0\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	case "check":
+		runCheck(os.Args[2:])
 	case "explain":
 		runExplain(os.Args[2:])
 	case "approve":
 		runApprove(os.Args[2:])
+	case "deny":
+		runDeny(os.Args[2:])
+	case "policy":
+		runPolicy(os.Args[2:])
 	case "approvals":
 		runApprovals(os.Args[2:])
 	case "revoke":
@@ -66,6 +76,8 @@ func main() {
 		runRestore(os.Args[2:])
 	case "cache":
 		runCache(os.Args[2:])
+	case "mcp":
+		runMCP(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -73,6 +85,23 @@ func main() {
 }
 
 func runInit(args []string) {
+	var dryRun bool
+	for _, arg := range args {
+		if arg == "--dry-run" {
+			dryRun = true
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: installgate init [--dry-run]")
+			os.Exit(2)
+		}
+	}
+
+	dataDir := getDataDir()
+	if dryRun {
+		fmt.Printf("[dry-run] Would initialize InstallGate at %s\n", dataDir)
+		fmt.Println("[dry-run] Would initialize SQLite store and database migrations")
+		return
+	}
+
 	mgr, err := config.NewLifecycleManager()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "installgate: %v\n", err)
@@ -84,13 +113,25 @@ func runInit(args []string) {
 		os.Exit(1)
 	}
 
-	dataDir := getDataDir()
 	fmt.Printf("InstallGate initialized at %s\n", dataDir)
 }
 
 func runEnable(args []string) {
-	if len(args) == 0 || args[0] != "npm" {
-		fmt.Fprintln(os.Stderr, "usage: installgate enable npm")
+	var dryRun bool
+	var target string
+	for _, arg := range args {
+		if arg == "--dry-run" {
+			dryRun = true
+		} else if target == "" {
+			target = arg
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: installgate enable npm [--dry-run]")
+			os.Exit(2)
+		}
+	}
+
+	if target != "npm" {
+		fmt.Fprintln(os.Stderr, "usage: installgate enable npm [--dry-run]")
 		os.Exit(2)
 	}
 
@@ -101,23 +142,49 @@ func runEnable(args []string) {
 	}
 
 	ctx := context.Background()
-	if err := mgr.EnableNpm(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "installgate: %v\n", err)
-		os.Exit(1)
-	}
-
 	st, err := mgr.Status(ctx)
 	reg := config.DefaultGatewayURL + "/"
 	if err == nil && st.GatewayURL != "" {
 		reg = st.GatewayURL + "/"
 	}
+
+	if dryRun {
+		fmt.Printf("[dry-run] Would enable InstallGate for npm: registry -> %s\n", reg)
+		fmt.Println("[dry-run] Would preserve prior configuration byte-for-byte in journal.")
+		return
+	}
+
+	if err := mgr.EnableNpm(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "installgate: %v\n", err)
+		os.Exit(1)
+	}
+
 	fmt.Printf("InstallGate enabled for npm: registry -> %s\nPrior configuration preserved byte-for-byte.\n", reg)
 }
 
 func runDisable(args []string) {
-	if len(args) == 0 || args[0] != "npm" {
-		fmt.Fprintln(os.Stderr, "usage: installgate disable npm")
+	var dryRun bool
+	var target string
+	for _, arg := range args {
+		if arg == "--dry-run" {
+			dryRun = true
+		} else if target == "" {
+			target = arg
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: installgate disable npm [--dry-run]")
+			os.Exit(2)
+		}
+	}
+
+	if target != "npm" {
+		fmt.Fprintln(os.Stderr, "usage: installgate disable npm [--dry-run]")
 		os.Exit(2)
+	}
+
+	if dryRun {
+		fmt.Println("[dry-run] Would disable InstallGate for npm.")
+		fmt.Println("[dry-run] Would restore prior registry configuration byte-for-byte from journal.")
+		return
 	}
 
 	mgr, err := config.NewLifecycleManager()
@@ -255,6 +322,7 @@ func getStore() (store.Store, error) {
 
 func runApprove(args []string) {
 	var pkg, ver, reason, durationStr string
+	var jsonOutput, dryRun bool
 	ver = "*"
 	durationStr = "24h"
 	reason = "manual human approval"
@@ -276,6 +344,10 @@ func runApprove(args []string) {
 				durationStr = args[i+1]
 				i++
 			}
+		case "--json":
+			jsonOutput = true
+		case "--dry-run":
+			dryRun = true
 		default:
 			if !strings.HasPrefix(args[i], "-") && pkg == "" {
 				pkg = args[i]
@@ -291,6 +363,31 @@ func runApprove(args []string) {
 		os.Exit(2)
 	}
 
+	// Handle package@version coordinate format
+	if strings.Contains(pkg, "@") {
+		lastAt := strings.LastIndex(pkg, "@")
+		if lastAt > 0 {
+			if ver == "*" {
+				ver = pkg[lastAt+1:]
+			}
+			pkg = pkg[:lastAt]
+		}
+	}
+
+	// Handle decision ID target (e.g. dec_...)
+	if strings.HasPrefix(pkg, "dec_") {
+		st, err := getStore()
+		if err == nil {
+			if doc, err := st.GetDecision(context.Background(), pkg); err == nil && doc != nil {
+				pkg = doc.Package
+				if ver == "*" {
+					ver = doc.Version
+				}
+			}
+			_ = st.Close()
+		}
+	}
+
 	dur, err := time.ParseDuration(durationStr)
 	if err != nil || dur <= 0 {
 		fmt.Fprintf(os.Stderr, "installgate: invalid duration %q: %v\n", durationStr, err)
@@ -302,6 +399,33 @@ func runApprove(args []string) {
 		actor = "operator"
 	}
 
+	now := time.Now().UTC()
+	appID := fmt.Sprintf("app_%d", now.UnixNano())
+	expiresAt := now.Add(dur)
+
+	if dryRun {
+		if jsonOutput {
+			res := map[string]any{
+				"dry_run":    true,
+				"action":     "approve",
+				"package":    pkg,
+				"version":    ver,
+				"verdict":    "allow",
+				"reason":     reason,
+				"duration":   durationStr,
+				"expires_at": expiresAt.Format(time.RFC3339),
+				"actor":      actor,
+			}
+			data, _ := json.MarshalIndent(res, "", "  ")
+			fmt.Println(string(data))
+		} else {
+			fmt.Printf("[dry-run] Would create approval: %s (%s@%s, expires in %s at %s)\n", appID, pkg, ver, durationStr, expiresAt.Format(time.RFC3339))
+			fmt.Printf("[dry-run] Would record reason: %q by %s\n", reason, actor)
+			fmt.Println("[dry-run] Would append audit event: approval_created")
+		}
+		return
+	}
+
 	st, err := getStore()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "installgate: failed to open database: %v\n", err)
@@ -310,8 +434,6 @@ func runApprove(args []string) {
 	defer st.Close()
 
 	ctx := context.Background()
-	now := time.Now().UTC()
-	appID := fmt.Sprintf("app_%d", now.UnixNano())
 	app := &store.Approval{
 		ID:        appID,
 		Package:   pkg,
@@ -319,7 +441,7 @@ func runApprove(args []string) {
 		Reason:    reason,
 		Actor:     actor,
 		CreatedAt: now,
-		ExpiresAt: now.Add(dur),
+		ExpiresAt: expiresAt,
 	}
 
 	if err := st.CreateApproval(ctx, app); err != nil {
@@ -340,11 +462,27 @@ func runApprove(args []string) {
 		},
 	})
 
+	if jsonOutput {
+		res := map[string]any{
+			"approval_id": appID,
+			"package":     pkg,
+			"version":     ver,
+			"verdict":     "allow",
+			"reason":      reason,
+			"duration":    durationStr,
+			"expires_at":  app.ExpiresAt.Format(time.RFC3339),
+			"actor":       actor,
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
 	fmt.Printf("Approval created: %s (%s@%s, expires in %s at %s)\n", appID, pkg, ver, durationStr, app.ExpiresAt.Format(time.RFC3339))
 }
 
 func approveUsage() {
-	fmt.Fprintln(os.Stderr, "usage: installgate approve <package> [--version <ver>] [--reason <reason>] [--duration <dur>]")
+	fmt.Fprintln(os.Stderr, "usage: installgate approve <package> [--version <ver>] [--reason <reason>] [--duration <dur>] [--dry-run] [--json]")
 }
 
 func runApprovals(args []string) {
@@ -405,9 +543,29 @@ func runApprovals(args []string) {
 }
 
 func runRevoke(args []string) {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: installgate revoke <approval-id>")
+	var dryRun bool
+	var approvalID string
+
+	for _, arg := range args {
+		if arg == "--dry-run" {
+			dryRun = true
+		} else if approvalID == "" {
+			approvalID = arg
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: installgate revoke <approval-id> [--dry-run]")
+			os.Exit(2)
+		}
+	}
+
+	if approvalID == "" {
+		fmt.Fprintln(os.Stderr, "usage: installgate revoke <approval-id> [--dry-run]")
 		os.Exit(2)
+	}
+
+	if dryRun {
+		fmt.Printf("[dry-run] Would revoke approval: %s\n", approvalID)
+		fmt.Println("[dry-run] Would append audit event: approval_revoked")
+		return
 	}
 
 	st, err := getStore()
@@ -419,7 +577,7 @@ func runRevoke(args []string) {
 
 	ctx := context.Background()
 	now := time.Now().UTC()
-	if err := st.RevokeApproval(ctx, args[0], now); err != nil {
+	if err := st.RevokeApproval(ctx, approvalID, now); err != nil {
 		fmt.Fprintf(os.Stderr, "installgate: %v\n", err)
 		os.Exit(1)
 	}
@@ -428,11 +586,11 @@ func runRevoke(args []string) {
 		EventTime: now,
 		EventType: "approval_revoked",
 		Metadata: map[string]string{
-			"approval_id": args[0],
+			"approval_id": approvalID,
 		},
 	})
 
-	fmt.Printf("Approval %s revoked.\n", args[0])
+	fmt.Printf("Approval %s revoked.\n", approvalID)
 }
 
 func runAudit(args []string) {
@@ -512,10 +670,181 @@ func runAudit(args []string) {
 	}
 }
 
-func runBackup(args []string) {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: installgate backup <destination-file>")
+func runCheck(args []string) {
+	var pkg, ver string
+	var jsonOutput bool
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--version", "-v":
+			if i+1 < len(args) {
+				ver = args[i+1]
+				i++
+			}
+		case "--json":
+			jsonOutput = true
+		default:
+			if !strings.HasPrefix(args[i], "-") && pkg == "" {
+				pkg = args[i]
+			} else {
+				checkUsage()
+				os.Exit(2)
+			}
+		}
+	}
+
+	if pkg == "" {
+		checkUsage()
 		os.Exit(2)
+	}
+
+	if strings.Contains(pkg, "@") {
+		lastAt := strings.LastIndex(pkg, "@")
+		if lastAt > 0 {
+			if ver == "" {
+				ver = pkg[lastAt+1:]
+			}
+			pkg = pkg[:lastAt]
+		}
+	}
+
+	if ver == "" {
+		ver = "latest"
+	}
+
+	pol, err := policy.LoadDefaultPolicy(".")
+	if err != nil || pol == nil {
+		pol = policy.NewDefaultPolicy()
+	}
+
+	cache := evidence.NewMemoryCache()
+	assembler := evidence.NewAssembler(
+		evidence.WithCache(cache),
+		evidence.WithFreshnessPolicy(evidence.DefaultFreshnessPolicy()),
+	)
+
+	var dbStore store.Store
+	if st, err := getStore(); err == nil {
+		dbStore = st
+		defer dbStore.Close()
+	}
+
+	engine := gateway.NewEngine(gateway.EngineConfig{
+		Policy:    pol,
+		Assembler: assembler,
+		Store:     dbStore,
+		Actor:     "cli",
+	})
+
+	ctx := context.Background()
+	doc, err := engine.Evaluate(ctx, pkg, ver)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "installgate: check error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if jsonOutput {
+		data, err := explanation.RenderJSON(doc)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "installgate: error rendering JSON: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(string(data))
+	} else {
+		fmt.Print(explanation.RenderHuman(doc))
+	}
+}
+
+func checkUsage() {
+	fmt.Fprintln(os.Stderr, "usage: installgate check <package> [--version <ver>] [--json]")
+}
+
+func runDeny(args []string) {
+	var pkg, ver, reason string
+	var jsonOutput, dryRun bool
+	ver = "*"
+	reason = "manual human denial"
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--version", "-v":
+			if i+1 < len(args) {
+				ver = args[i+1]
+				i++
+			}
+		case "--reason", "-r":
+			if i+1 < len(args) {
+				reason = args[i+1]
+				i++
+			}
+		case "--json":
+			jsonOutput = true
+		case "--dry-run":
+			dryRun = true
+		default:
+			if !strings.HasPrefix(args[i], "-") && pkg == "" {
+				pkg = args[i]
+			} else {
+				denyUsage()
+				os.Exit(2)
+			}
+		}
+	}
+
+	if pkg == "" {
+		denyUsage()
+		os.Exit(2)
+	}
+
+	if strings.Contains(pkg, "@") {
+		lastAt := strings.LastIndex(pkg, "@")
+		if lastAt > 0 {
+			if ver == "*" {
+				ver = pkg[lastAt+1:]
+			}
+			pkg = pkg[:lastAt]
+		}
+	}
+
+	if strings.HasPrefix(pkg, "dec_") {
+		st, err := getStore()
+		if err == nil {
+			if doc, err := st.GetDecision(context.Background(), pkg); err == nil && doc != nil {
+				pkg = doc.Package
+				if ver == "*" {
+					ver = doc.Version
+				}
+			}
+			_ = st.Close()
+		}
+	}
+
+	actor := os.Getenv("USER")
+	if actor == "" {
+		actor = "operator"
+	}
+	now := time.Now().UTC()
+
+	if dryRun {
+		if jsonOutput {
+			res := map[string]any{
+				"dry_run":   true,
+				"action":    "deny",
+				"package":   pkg,
+				"version":   ver,
+				"verdict":   "block",
+				"reason":    reason,
+				"actor":     actor,
+				"denied_at": now.Format(time.RFC3339),
+			}
+			data, _ := json.MarshalIndent(res, "", "  ")
+			fmt.Println(string(data))
+		} else {
+			fmt.Printf("[dry-run] Would record denial: %s@%s (%s) by %s\n", pkg, ver, reason, actor)
+			fmt.Println("[dry-run] Would revoke any active approvals for this package")
+			fmt.Println("[dry-run] Would append audit event: decision_denied")
+		}
+		return
 	}
 
 	st, err := getStore()
@@ -525,7 +854,196 @@ func runBackup(args []string) {
 	}
 	defer st.Close()
 
-	dest := args[0]
+	ctx := context.Background()
+
+	apps, err := st.ListApprovals(ctx, true, now)
+	revokedCount := 0
+	if err == nil {
+		for _, app := range apps {
+			if app.Package == pkg && (app.Version == ver || ver == "*" || app.Version == "*") {
+				_ = st.RevokeApproval(ctx, app.ID, now)
+				revokedCount++
+			}
+		}
+	}
+
+	_ = st.AppendAudit(ctx, &store.AuditEvent{
+		EventTime: now,
+		EventType: "decision_denied",
+		Package:   pkg,
+		Version:   ver,
+		Actor:     actor,
+		Verdict:   string(verdict.Block),
+		Metadata: map[string]string{
+			"reason":            reason,
+			"revoked_approvals": strconv.Itoa(revokedCount),
+		},
+	})
+
+	if jsonOutput {
+		res := map[string]any{
+			"action":            "deny",
+			"package":           pkg,
+			"version":           ver,
+			"verdict":           "block",
+			"reason":            reason,
+			"actor":             actor,
+			"revoked_approvals": revokedCount,
+			"denied_at":         now.Format(time.RFC3339),
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
+	fmt.Printf("Denial recorded: %s@%s (%s) by %s\n", pkg, ver, reason, actor)
+	if revokedCount > 0 {
+		fmt.Printf("Revoked %d active approval(s) for %s@%s.\n", revokedCount, pkg, ver)
+	}
+}
+
+func denyUsage() {
+	fmt.Fprintln(os.Stderr, "usage: installgate deny <package> [--version <ver>] [--reason <reason>] [--dry-run] [--json]")
+}
+
+func runPolicy(args []string) {
+	var jsonOutput bool
+	var subcmd, targetFile string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOutput = true
+		default:
+			if subcmd == "" {
+				subcmd = args[i]
+			} else if targetFile == "" {
+				targetFile = args[i]
+			} else {
+				policyUsage()
+				os.Exit(2)
+			}
+		}
+	}
+
+	switch subcmd {
+	case "bounds":
+		if jsonOutput {
+			res := map[string]string{
+				"bounds": policy.BoundsStatement,
+			}
+			data, _ := json.MarshalIndent(res, "", "  ")
+			fmt.Println(string(data))
+		} else {
+			fmt.Println(policy.BoundsStatement)
+		}
+		return
+
+	case "validate":
+		path := targetFile
+		if path == "" {
+			path = policy.DefaultPolicyFileName
+		}
+		p, err := policy.LoadPolicyFile(path)
+		if err != nil {
+			if jsonOutput {
+				res := map[string]any{
+					"valid": false,
+					"file":  path,
+					"error": err.Error(),
+				}
+				data, _ := json.MarshalIndent(res, "", "  ")
+				fmt.Println(string(data))
+			} else {
+				fmt.Fprintf(os.Stderr, "installgate: policy validation failed for %s: %v\n", path, err)
+			}
+			os.Exit(1)
+		}
+
+		if jsonOutput {
+			res := map[string]any{
+				"valid":                   true,
+				"file":                    path,
+				"version":                 p.Version,
+				"profile":                 p.Profile,
+				"vulnerability_threshold": p.VulnerabilityThreshold,
+			}
+			data, _ := json.MarshalIndent(res, "", "  ")
+			fmt.Println(string(data))
+		} else {
+			fmt.Printf("Policy %s is valid (profile: %s, vulnerability_threshold: %s)\n", path, p.Profile, p.VulnerabilityThreshold)
+		}
+		return
+
+	case "", "show":
+		pol, err := policy.LoadDefaultPolicy(".")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "installgate: failed to load policy: %v\n", err)
+			os.Exit(1)
+		}
+
+		if jsonOutput {
+			res := map[string]any{
+				"version":                 pol.Version,
+				"profile":                 pol.Profile,
+				"vulnerability_threshold": pol.VulnerabilityThreshold,
+				"bounds":                  pol.BoundsStatement(),
+			}
+			data, _ := json.MarshalIndent(res, "", "  ")
+			fmt.Println(string(data))
+			return
+		}
+
+		fmt.Println("InstallGate Policy:")
+		fmt.Printf("  Version:                 %s\n", pol.Version)
+		fmt.Printf("  Profile:                 %s\n", pol.Profile)
+		fmt.Printf("  Vulnerability threshold: %s\n", pol.VulnerabilityThreshold)
+		fmt.Println("\nPolicy Bounds:")
+		for _, line := range strings.Split(pol.BoundsStatement(), "\n") {
+			fmt.Printf("  %s\n", line)
+		}
+
+	default:
+		policyUsage()
+		os.Exit(2)
+	}
+}
+
+func policyUsage() {
+	fmt.Fprintln(os.Stderr, "usage: installgate policy [show|bounds|validate <file>] [--json]")
+}
+
+func runBackup(args []string) {
+	var dryRun bool
+	var dest string
+	for _, arg := range args {
+		if arg == "--dry-run" {
+			dryRun = true
+		} else if dest == "" {
+			dest = arg
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: installgate backup <destination-file> [--dry-run]")
+			os.Exit(2)
+		}
+	}
+
+	if dest == "" {
+		fmt.Fprintln(os.Stderr, "usage: installgate backup <destination-file> [--dry-run]")
+		os.Exit(2)
+	}
+
+	if dryRun {
+		fmt.Printf("[dry-run] Would write database backup to %s\n", dest)
+		return
+	}
+
+	st, err := getStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "installgate: failed to open database: %v\n", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
 	if err := st.Backup(context.Background(), dest); err != nil {
 		fmt.Fprintf(os.Stderr, "installgate: backup failed: %v\n", err)
 		os.Exit(1)
@@ -535,12 +1053,24 @@ func runBackup(args []string) {
 }
 
 func runRestore(args []string) {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: installgate restore <source-backup-file>")
+	var dryRun bool
+	var src string
+	for _, arg := range args {
+		if arg == "--dry-run" {
+			dryRun = true
+		} else if src == "" {
+			src = arg
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: installgate restore <source-backup-file> [--dry-run]")
+			os.Exit(2)
+		}
+	}
+
+	if src == "" {
+		fmt.Fprintln(os.Stderr, "usage: installgate restore <source-backup-file> [--dry-run]")
 		os.Exit(2)
 	}
 
-	src := args[0]
 	if _, err := os.Stat(src); err != nil {
 		fmt.Fprintf(os.Stderr, "installgate: source backup file not found: %v\n", err)
 		os.Exit(1)
@@ -553,6 +1083,12 @@ func runRestore(args []string) {
 		os.Exit(1)
 	}
 	_ = probeStore.Close()
+
+	if dryRun {
+		fmt.Printf("[dry-run] Would restore database from %s\n", src)
+		fmt.Println("[dry-run] Verified source backup database is valid SQLite database")
+		return
+	}
 
 	dataDir := getDataDir()
 	dbPath := filepath.Join(dataDir, "installgate.db")
@@ -577,28 +1113,56 @@ func runRestore(args []string) {
 }
 
 func runCache(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: installgate cache <status|clear|rebuild>")
+	var dryRun bool
+	var subcmd string
+	for _, arg := range args {
+		if arg == "--dry-run" {
+			dryRun = true
+		} else if subcmd == "" {
+			subcmd = arg
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: installgate cache <status|clear|rebuild> [--dry-run]")
+			os.Exit(2)
+		}
+	}
+
+	if subcmd == "" {
+		fmt.Fprintln(os.Stderr, "usage: installgate cache <status|clear|rebuild> [--dry-run]")
 		os.Exit(2)
 	}
 
-	st, err := getStore()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "installgate: failed to open database: %v\n", err)
-		os.Exit(1)
-	}
-	defer st.Close()
-
-	ctx := context.Background()
-
-	switch args[0] {
+	switch subcmd {
 	case "clear":
+		if dryRun {
+			fmt.Println("[dry-run] Would clear evidence cache in database")
+			return
+		}
+		st, err := getStore()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "installgate: failed to open database: %v\n", err)
+			os.Exit(1)
+		}
+		defer st.Close()
+
+		ctx := context.Background()
 		if err := st.ClearEvidenceCache(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "installgate: failed clearing cache: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Println("Evidence cache cleared.")
 	case "rebuild":
+		if dryRun {
+			fmt.Println("[dry-run] Would clear and rebuild evidence cache from recorded allow decisions")
+			return
+		}
+		st, err := getStore()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "installgate: failed to open database: %v\n", err)
+			os.Exit(1)
+		}
+		defer st.Close()
+
+		ctx := context.Background()
 		// Clear existing cache and rebuild from recorded decisions
 		if err := st.ClearEvidenceCache(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "installgate: failed clearing cache: %v\n", err)
@@ -629,11 +1193,44 @@ func runCache(args []string) {
 	case "status":
 		fmt.Println("Cache operational and backed by SQLite store.")
 	default:
-		fmt.Fprintln(os.Stderr, "usage: installgate cache <status|clear|rebuild>")
+		fmt.Fprintln(os.Stderr, "usage: installgate cache <status|clear|rebuild> [--dry-run]")
 		os.Exit(2)
 	}
 }
 
+func runMCP(args []string) {
+	pol, err := policy.LoadDefaultPolicy(".")
+	if err != nil || pol == nil {
+		pol = policy.NewDefaultPolicy()
+	}
+
+	cache := evidence.NewMemoryCache()
+	assembler := evidence.NewAssembler(
+		evidence.WithCache(cache),
+		evidence.WithFreshnessPolicy(evidence.DefaultFreshnessPolicy()),
+	)
+
+	st, err := getStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "installgate: failed to open database: %v\n", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
+	engine := gateway.NewEngine(gateway.EngineConfig{
+		Policy:    pol,
+		Assembler: assembler,
+		Store:     st,
+		Actor:     "mcp",
+	})
+
+	srv := mcpserver.NewServer(st, engine, mcpserver.WithPolicy(pol))
+	if err := srv.ServeStdio(context.Background(), os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "installgate: mcp server error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: installgate <init|start|stop|enable npm|disable npm|status|version|doctor|explain|approve|approvals|revoke|audit|backup|restore|cache>")
+	fmt.Fprintln(os.Stderr, "usage: installgate <init|start|stop|enable npm|disable npm|status|check|explain|approve|deny|policy|approvals|revoke|audit|backup|restore|cache|version|doctor|mcp>")
 }
