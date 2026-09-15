@@ -393,12 +393,12 @@ func (s *SQLiteStore) AppendAudit(ctx context.Context, event *AuditEvent) error 
 	res, err := s.db.ExecContext(ctx, insertSQL,
 		event.EventTime.UTC(),
 		event.EventType,
-		event.Package,
-		event.Version,
+		RedactSensitiveString(event.Package),
+		RedactSensitiveString(event.Version),
 		event.DecisionID,
-		event.RuleID,
-		event.Verdict,
-		event.Actor,
+		RedactSensitiveString(event.RuleID),
+		RedactSensitiveString(event.Verdict),
+		RedactSensitiveString(event.Actor),
 		metaJSON,
 		snapJSON,
 	)
@@ -604,6 +604,16 @@ func (s *SQLiteStore) GetDecision(ctx context.Context, decisionID string) (*expl
 	return explanation.ParseJSON([]byte(docJSON))
 }
 
+// Save implements explanation.DecisionStore.
+func (s *SQLiteStore) Save(doc *explanation.DecisionDocument) error {
+	return s.SaveDecision(context.Background(), doc)
+}
+
+// Get implements explanation.DecisionStore.
+func (s *SQLiteStore) Get(decisionID string) (*explanation.DecisionDocument, error) {
+	return s.GetDecision(context.Background(), decisionID)
+}
+
 // RecordConfigHistory appends a durable configuration transaction record.
 func (s *SQLiteStore) RecordConfigHistory(ctx context.Context, action, phase, payload string) error {
 	s.mu.Lock()
@@ -611,7 +621,7 @@ func (s *SQLiteStore) RecordConfigHistory(ctx context.Context, action, phase, pa
 
 	const insertSQL = `INSERT INTO config_history (action, phase, payload, created_at)
 		VALUES (?, ?, ?, ?)`
-	_, err := s.db.ExecContext(ctx, insertSQL, action, phase, payload, time.Now().UTC())
+	_, err := s.db.ExecContext(ctx, insertSQL, action, phase, RedactSensitiveString(payload), time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("failed inserting config history: %w", err)
 	}
