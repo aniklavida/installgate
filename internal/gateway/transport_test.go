@@ -1071,7 +1071,7 @@ func TestHealthRoute(t *testing.T) {
 
 func TestHealthAndReadinessWithCacheFreshness(t *testing.T) {
 	cache := evidence.NewMemoryCache()
-	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	freshOutcome := evidence.NewAvailableOutcome(evidence.KindVulnerability, "osv", nil, now, now.Add(1*time.Hour))
 	cache.Put("test-pkg", "1.0.0", freshOutcome, now.Add(5*time.Hour))
 
