@@ -16,7 +16,9 @@ func TestClassify(t *testing.T) {
 		{"scoped metadata", http.MethodHead, "/@scope/pkg", Metadata, "@scope/pkg", ""},
 		{"unscoped tarball", http.MethodGet, "/lodash/-/lodash-4.17.21.tgz", Tarball, "lodash", "4.17.21"},
 		{"scoped tarball", http.MethodGet, "/@scope/pkg/-/pkg-1.2.3.tgz", Tarball, "@scope/pkg", "1.2.3"},
+		{"encoded scoped tarball", http.MethodGet, "/@scope%2Fpkg/-/pkg-1.2.3.tgz", Tarball, "@scope/pkg", "1.2.3"},
 		{"health", http.MethodGet, "/-/installgate/health", Health, "", ""},
+		{"ready", http.MethodGet, "/-/installgate/ready", Ready, "", ""},
 		{"mutation rejected", http.MethodPut, "/lodash", Unsupported, "", ""},
 		{"registry service rejected", http.MethodGet, "/-/whoami", Unsupported, "", ""},
 	}

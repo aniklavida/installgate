@@ -1,0 +1,35 @@
+{
+  "schema_version": "1",
+  "decision_id": "dec_ac44a98a88a95124",
+  "package": "lodash",
+  "version": "4.17.21",
+  "verdict": "approval_required",
+  "degraded": true,
+  "snapshot_id": "sha256:284a9add0616b93138ff141fb393e43e3c9b95eec669304093b2e870c801d416",
+  "reasons": [
+    {
+      "rule_id": "availability.no-cache",
+      "summary": "required evidence is unavailable and no usable cached allow exists",
+      "evidence": [
+        {
+          "kind": "availability",
+          "source": "osv",
+          "observed_value": "unavailable",
+          "confidence": "none",
+          "retrieved_at": "2026-09-15T12:00:00Z",
+          "fresh_until": "2026-09-15T12:00:00Z",
+          "freshness": "unavailable"
+        }
+      ]
+    }
+  ],
+  "changes": [],
+  "missing_evidence": [
+    {
+      "kind": "availability",
+      "source": "osv",
+      "reason": "provider request failed or timed out"
+    }
+  ],
+  "next_command": "installgate approve dec_ac44a98a88a95124"
+}

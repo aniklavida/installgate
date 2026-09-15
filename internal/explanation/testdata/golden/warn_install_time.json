@@ -1,0 +1,29 @@
+{
+  "schema_version": "1",
+  "decision_id": "dec_6a11ed9242cc02fd",
+  "package": "fsevents",
+  "version": "2.3.3",
+  "verdict": "warn",
+  "degraded": false,
+  "snapshot_id": "sha256:678e3a162935a64e39d8f2d13c01148cad955de6bbafc8129b054eab8270b349",
+  "reasons": [
+    {
+      "rule_id": "execution.install-time",
+      "summary": "the package can execute install-time code",
+      "evidence": [
+        {
+          "kind": "install_script",
+          "source": "npm_registry",
+          "observed_value": "present",
+          "confidence": "high",
+          "retrieved_at": "2026-09-15T12:00:00Z",
+          "fresh_until": "2026-09-22T12:00:00Z",
+          "freshness": "fresh"
+        }
+      ]
+    }
+  ],
+  "changes": [],
+  "missing_evidence": [],
+  "next_command": "npm install fsevents@2.3.3"
+}
