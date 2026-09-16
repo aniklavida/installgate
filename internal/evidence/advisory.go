@@ -22,6 +22,7 @@ const (
 
 var (
 	errEmptyBody       = errors.New("upstream returned empty body: expected OSV JSON advisory payload")
+	errNoVulnsKey      = errors.New(`upstream response omitted the "vulns" key: cannot tell an answer from a stub`)
 	errProviderTimeout = errors.New("advisory provider request timed out")
 )
 
@@ -166,6 +167,23 @@ type osvBatchQueryResponse struct {
 	Results []osvQueryResponse `json:"results"`
 }
 
+// hasVulnsKey reports whether an OSV response actually carried a "vulns" field.
+//
+// `{"vulns": []}` is OSV saying "we looked and found nothing" — a legitimate
+// clean answer, and the ordinary response for a healthy package. `{}` omits the
+// field altogether, and nothing in it distinguishes a real answer from a stub,
+// a proxy's default body, or a truncated cache entry. Unmarshalling alone
+// cannot tell them apart: both leave the slice empty. The first may allow; the
+// second must never be read as an all-clear.
+func hasVulnsKey(body []byte) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return false
+	}
+	_, ok := raw["vulns"]
+	return ok
+}
+
 // Provide queries OSV for the resolved package coordinates.
 func (p *AdvisoryProvider) Provide(ctx context.Context, q Query) Outcome {
 	now := p.now()
@@ -238,6 +256,10 @@ func (p *AdvisoryProvider) Provide(ctx context.Context, q Query) Outcome {
 		return NewUnavailableOutcome(p.Kind(), p.Name(), fmt.Errorf("invalid json payload: %w", err), now)
 	}
 
+	if !hasVulnsKey(bodyBytes) {
+		return NewUnavailableOutcome(p.Kind(), p.Name(), errNoVulnsKey, now)
+	}
+
 	freshUntil := now.Add(p.freshTTL)
 
 	// Check if upstream signaled stale data
@@ -253,6 +275,18 @@ func (p *AdvisoryProvider) Provide(ctx context.Context, q Query) Outcome {
 	}
 
 	return NewAvailableOutcome(p.Kind(), p.Name(), signals, now, freshUntil)
+}
+
+// rawBatchResults returns each element of an OSV batch response's "results"
+// array as raw JSON, so the presence of "vulns" can be tested per result.
+func rawBatchResults(body []byte) []json.RawMessage {
+	var raw struct {
+		Results []json.RawMessage `json:"results"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	return raw.Results
 }
 
 // ProvideBatch executes batch lookups using OSV's /v1/querybatch endpoint.
@@ -371,7 +405,16 @@ func (p *AdvisoryProvider) ProvideBatch(ctx context.Context, queries []Query) []
 	freshUntil := now.Add(p.freshTTL)
 	isStale := strings.Contains(resp.Header.Get("Warning"), "110")
 
+	// Same rule as the single-query path, applied per result: a result object
+	// that omits "vulns" is not an all-clear. ProvideBatch has no production
+	// caller today; the check goes in now so it is not a hole waiting for one.
+	rawResults := rawBatchResults(bodyBytes)
+
 	for i, res := range parsed.Results {
+		if i >= len(rawResults) || !hasVulnsKey(rawResults[i]) {
+			outcomes[i] = NewUnavailableOutcome(p.Kind(), p.Name(), errNoVulnsKey, now)
+			continue
+		}
 		sigs := p.processVulnerabilities(res.Vulns, now, freshUntil)
 		if isStale {
 			outcomes[i] = NewStaleOutcome(p.Kind(), p.Name(), sigs, now, now, "upstream returned stale advisory cache")
