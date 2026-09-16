@@ -315,3 +315,43 @@ func TestAdvisoryProviderProvideBatch(t *testing.T) {
 		t.Fatalf("expected no_record_found for pkg-b, got %q", outcomes[1].Signals()[0].Observation)
 	}
 }
+
+// An advisory provider that answers 200 OK with a well-formed payload that
+// simply omits "vulns" is the failure mode worth the most care: it is
+// syntactically fine, it parses, and it looks exactly like "nothing found".
+// `{"vulns": []}` is OSV genuinely reporting a clean package and must still be
+// allowed to; `{}` cannot be told apart from a stub and must not.
+func TestOmittedVulnsKeyIsNotAnAllClear(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		wantState State
+	}{
+		{"explicit empty list is a real clean answer", `{"vulns": []}`, StateAvailable},
+		{"omitted vulns key is not an answer", `{}`, StateUnavailable},
+		{"unrelated object is not an answer", `{"results": []}`, StateUnavailable},
+		{"array instead of object is not an answer", `[]`, StateUnavailable},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			p := NewAdvisoryProvider(
+				WithAdvisoryBaseURL(srv.URL),
+				WithAdvisoryHTTPClient(srv.Client()),
+			)
+			out := p.Provide(context.Background(), Query{Package: "probe-pkg", Version: "1.0.0"})
+
+			if out.State() != tc.wantState {
+				t.Fatalf("body %s: got state %q, want %q — an empty-looking response must not be read as an all-clear",
+					tc.body, out.State(), tc.wantState)
+			}
+		})
+	}
+}
