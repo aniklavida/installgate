@@ -286,6 +286,11 @@ func InspectArchiveWithLimits(
 		if cleanName == ".." || strings.HasPrefix(cleanName, "../") {
 			return nil, fmt.Errorf("%w: parent path %q", ErrArchivePathTraversal, hdr.Name)
 		}
+		for _, part := range strings.Split(normalizedName, "/") {
+			if part == ".." {
+				return nil, fmt.Errorf("%w: path contains traversal segment %q", ErrArchivePathTraversal, hdr.Name)
+			}
+		}
 
 		// 2. Check nesting depth
 		depth := pathDepth(cleanName)
