@@ -65,4 +65,4 @@ Integrity mismatch and known malicious evidence block in every profile. Vulnerab
 
 ## Unsupported in v1.0
 
-Other package ecosystems, private/authenticated npm registries, publication and mutations, general application-code scanning, automatic source rewriting, cloud accounts, a web dashboard, AI-generated verdicts, and remote or agent-controlled approval.
+Other package ecosystems, private/authenticated npm registries, publication and mutations, general application-code scanning, automatic source rewriting, cloud accounts, a web dashboard, AI-generated verdicts, remote or agent-controlled approval, Windows on arm64 (no standard automated verification runner), and Bun on Windows (upstream proxy routing limitations). See [COMPATIBILITY.md](COMPATIBILITY.md) for full matrix details.

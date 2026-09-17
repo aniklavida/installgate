@@ -21,10 +21,9 @@ Planned for v1.0:
 - content-addressed tarball quarantine before package-manager delivery;
 - integrity verification and bounded static inspection without executing package code;
 - explainable evidence from package history, advisories, provenance changes, name confusion, and install-time behaviour;
-- repository policy, expiring human approvals, SQLite audit history, CLI, and read-only/preflight MCP tools;
-- verified npm, pnpm, Yarn, and Bun support on macOS, Linux, and Windows.
+- verified npm, pnpm, Yarn, and Bun support on macOS, Linux, and Windows (see [Compatibility matrix](docs/COMPATIBILITY.md)).
 
-Private registries, other package ecosystems, a web dashboard, cloud accounts, and AI-generated security verdicts are unsupported in v1.0.
+Private registries, other package ecosystems, a web dashboard, cloud accounts, AI-generated security verdicts, Windows on arm64, and Bun on Windows are unsupported in v1.0.
 
 ## Why an install-path guard
 
@@ -46,6 +45,7 @@ These commands validate the foundation only. They do not enable a registry proxy
 
 - [Specification](docs/SPEC.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Compatibility matrix](docs/COMPATIBILITY.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Release checklist](docs/RELEASE_CHECKLIST.md)
 - [Contributing](CONTRIBUTING.md)

@@ -7,7 +7,7 @@ Development uses internal milestones. The first marketed release will be a compl
 - [x] Establish repository, documentation, contribution, security, and CI foundation.
 - [x] Define verdict/evidence contracts and the first deterministic policy rules.
 - [x] Classify npm metadata and tarball request paths.
-- [ ] Prove upstream metadata and tarball pass-through without semantic corruption.
+- [x] Prove upstream metadata and tarball pass-through without semantic corruption.
 
 ## M1 — Evidence and policy
 
@@ -30,7 +30,7 @@ Development uses internal milestones. The first marketed release will be a compl
 
 ## M4 — Compatibility and release proof
 
-- Verify npm, pnpm, Yarn, and Bun across supported operating systems and architectures.
+- [x] Verify npm, pnpm, Yarn, and Bun across supported operating systems and architectures (see [COMPATIBILITY.md](COMPATIBILITY.md)).
 - Complete adversarial security, outage, crash-recovery, privacy, and migration tests.
 - Produce signed binaries, optional Docker image, clean-install proof, and a concise demo.
 - Publish v1.0 only after every release gate passes.
