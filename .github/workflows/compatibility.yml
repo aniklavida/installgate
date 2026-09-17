@@ -1,0 +1,151 @@
+name: Compatibility Matrix
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: ${{ matrix.os }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: macos
+            arch: arm64
+            runner: macos-latest
+          - os: macos
+            arch: amd64
+            # `macos-13` was retired in December 2025. Jobs naming it are never
+            # scheduled — they queue indefinitely, so the whole matrix never
+            # reaches a conclusion and its logs stay unavailable. This matrix
+            # had never once completed. `macos-15-intel` is the replacement
+            # x86_64 label; GitHub has said Intel macOS runners go away
+            # entirely when the macOS 15 image retires.
+            runner: macos-15-intel
+          - os: windows
+            arch: amd64
+            runner: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Setup Node.js and npm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Yarn
+        shell: bash
+        run: |
+          corepack enable || npm install -g yarn
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        continue-on-error: true
+
+      - name: Verify compilation
+        shell: bash
+        run: |
+          go vet ./...
+          go build ./cmd/installgate
+
+      - name: Run compatibility install suites
+        shell: bash
+        env:
+          # A missing package manager must fail this job rather than skip
+          # quietly: a silent skip on the runner looks exactly like a pass.
+          INSTALLGATE_REQUIRE_PACKAGE_MANAGERS: "1"
+        run: |
+          go test -v ./internal/compat/...
+
+      - name: Exercise CLI enable and disable lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Give the Windows binary its .exe. `installgate start` re-execs
+          # itself via os.Executable(), and Go's Windows exec refuses a path
+          # with no recognised extension — so an extensionless build made
+          # `start` fail with "executable file not found in %PATH%" while
+          # `status`, invoked directly by bash, worked fine. No real
+          # distribution ships an extensionless Windows binary; this was the
+          # workflow misnaming its own artefact, not a product defect.
+          BIN=./installgate_ci_bin
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            BIN=./installgate_ci_bin.exe
+          fi
+          go build -o "$BIN" ./cmd/installgate
+
+          TEST_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t 'ig_compat_test')
+          export INSTALLGATE_PORT=8945
+          export INSTALLGATE_DATA_DIR="$TEST_DIR/data"
+          export NPM_CONFIG_USERCONFIG="$TEST_DIR/.npmrc"
+
+          printf "registry=https://registry.npmjs.org/\naudit=false\n" > "$NPM_CONFIG_USERCONFIG"
+
+          # Poll for readiness rather than sleeping a fixed two seconds. A
+          # fixed sleep is a guess about the slowest runner, and when it is
+          # wrong the failure says only "gateway not running" — which is what
+          # happened on Windows and cost a round trip to diagnose. Capture the
+          # gateway's own output so a failure to start can say why.
+          "$BIN" start --port 8945 > gateway.log 2>&1 &
+          GATEWAY_PID=$!
+
+          # "Gateway process:  running on <url>" is the positive marker; the
+          # stopped branch prints "stopped". Match the positive one rather than
+          # inverting a match for the negative, which any other line satisfies.
+          ready=""
+          for _ in $(seq 1 30); do
+            if "$BIN" status 2>/dev/null | grep -qE "Gateway process: +running on"; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ -z "$ready" ]; then
+            echo "::error::gateway did not become ready within 30s"
+            echo "--- installgate status ---"
+            "$BIN" status || true
+            echo "--- gateway.log ---"
+            cat gateway.log || echo "(no output captured)"
+            echo "--- is the process still alive? ---"
+            kill -0 "$GATEWAY_PID" 2>/dev/null && echo "pid $GATEWAY_PID alive" || echo "pid $GATEWAY_PID gone"
+            exit 1
+          fi
+
+          "$BIN" status
+          "$BIN" enable npm
+          "$BIN" status
+
+          grep -F "127.0.0.1:8945" "$NPM_CONFIG_USERCONFIG"
+
+          "$BIN" disable npm
+          "$BIN" status
+
+          grep -F "https://registry.npmjs.org/" "$NPM_CONFIG_USERCONFIG"
+
+          "$BIN" stop || kill $GATEWAY_PID 2>/dev/null || true
+          rm -rf "$TEST_DIR" "$BIN" gateway.log

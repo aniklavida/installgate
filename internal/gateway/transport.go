@@ -328,7 +328,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if h.evaluator != nil && route.Package != "" {
+	if h.evaluator != nil && route.Package != "" && route.Version != "" {
 		doc, err := h.evaluator.Evaluate(ctx, route.Package, route.Version)
 		if err != nil {
 			http.Error(w, "bad gateway: policy evaluation error", http.StatusBadGateway)
