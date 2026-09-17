@@ -6,34 +6,36 @@ This document details verified package-manager and cross-platform compatibility 
 
 **Documentation compatibility is not verified support.** A matrix cell is considered verified only when real installs execute against the gateway on that operating system and architecture, producing reproducible evidence. A client documented as npm-compatible is not thereby tested.
 
-Testing is executed through both local suites and the automated continuous integration matrix in `.github/workflows/compatibility.yml`.
+Testing runs through local suites and the continuous integration matrix in `.github/workflows/compatibility.yml`.
+
+**This table currently claims almost nothing.** The suites and the matrix exist; the workflow has not yet produced a run. Three cells are marked verified because they were executed on a real macOS arm64 machine and their output recorded. Every other supported cell says "Suite written, not yet run", and stays that way until a run exists to cite — a written suite is not a passing one, and this document would be worthless if it blurred them.
 
 ## Compatibility matrix
 
 | Package Manager | OS | Architecture | Status | Verification Evidence / Reason |
 |---|---|---|---|---|
 | **npm** (v10+) | macOS | arm64 | Implemented and tested | Passing: scoped/unscoped, peer/optional, lockfile (`npm ci`), workspaces, cache, 403 block on corruption |
-| **npm** (v10+) | macOS | amd64 | Automated in CI | Tested in CI runner (`macos-13`) |
-| **npm** (v10+) | Linux | amd64 | Automated in CI | Tested in CI runner (`ubuntu-latest`) |
-| **npm** (v10+) | Linux | arm64 | Automated in CI | Tested in CI runner (`ubuntu-24.04-arm`) |
-| **npm** (v10+) | Windows | amd64 | Automated in CI | Tested in CI runner (`windows-latest`), CRLF line endings preserved |
+| **npm** (v10+) | macOS | amd64 | Suite written, not yet run | Targets `macos-13`; no run has produced evidence yet |
+| **npm** (v10+) | Linux | amd64 | Suite written, not yet run | Targets `ubuntu-latest`; no run has produced evidence yet |
+| **npm** (v10+) | Linux | arm64 | Suite written, not yet run | Targets `ubuntu-24.04-arm`; no run has produced evidence yet |
+| **npm** (v10+) | Windows | amd64 | Suite written, not yet run | Targets `windows-latest`; no run has produced evidence yet, CRLF line endings preserved |
 | **npm** (v10+) | Windows | arm64 | **Unsupported** | No standard GitHub-hosted runner exists to produce verified evidence |
 | **pnpm** (v9/v10) | macOS | arm64 | Implemented and tested | Passing: scoped/unscoped, peer/optional, `pnpm-workspace.yaml`, frozen lockfile, offline, 403 block |
-| **pnpm** (v9/v10) | macOS | amd64 | Automated in CI | Tested in CI runner (`macos-13`) |
-| **pnpm** (v9/v10) | Linux | amd64 | Automated in CI | Tested in CI runner (`ubuntu-latest`) |
-| **pnpm** (v9/v10) | Linux | arm64 | Automated in CI | Tested in CI runner (`ubuntu-24.04-arm`) |
-| **pnpm** (v9/v10) | Windows | amd64 | Automated in CI | Tested in CI runner (`windows-latest`) |
+| **pnpm** (v9/v10) | macOS | amd64 | Suite written, not yet run | Targets `macos-13`; no run has produced evidence yet |
+| **pnpm** (v9/v10) | Linux | amd64 | Suite written, not yet run | Targets `ubuntu-latest`; no run has produced evidence yet |
+| **pnpm** (v9/v10) | Linux | arm64 | Suite written, not yet run | Targets `ubuntu-24.04-arm`; no run has produced evidence yet |
+| **pnpm** (v9/v10) | Windows | amd64 | Suite written, not yet run | Targets `windows-latest`; no run has produced evidence yet |
 | **pnpm** (v9/v10) | Windows | arm64 | **Unsupported** | No standard GitHub-hosted runner exists to produce verified evidence |
 | **Yarn** (v1.22+) | macOS | arm64 | Implemented and tested | Passing: scoped/unscoped, peer/optional, `yarn.lock`, workspaces, offline, 403 block |
-| **Yarn** (v1.22+) | macOS | amd64 | Automated in CI | Tested in CI runner (`macos-13`) |
-| **Yarn** (v1.22+) | Linux | amd64 | Automated in CI | Tested in CI runner (`ubuntu-latest`) |
-| **Yarn** (v1.22+) | Linux | arm64 | Automated in CI | Tested in CI runner (`ubuntu-24.04-arm`) |
-| **Yarn** (v1.22+) | Windows | amd64 | Automated in CI | Tested in CI runner (`windows-latest`) |
+| **Yarn** (v1.22+) | macOS | amd64 | Suite written, not yet run | Targets `macos-13`; no run has produced evidence yet |
+| **Yarn** (v1.22+) | Linux | amd64 | Suite written, not yet run | Targets `ubuntu-latest`; no run has produced evidence yet |
+| **Yarn** (v1.22+) | Linux | arm64 | Suite written, not yet run | Targets `ubuntu-24.04-arm`; no run has produced evidence yet |
+| **Yarn** (v1.22+) | Windows | amd64 | Suite written, not yet run | Targets `windows-latest`; no run has produced evidence yet |
 | **Yarn** (v1.22+) | Windows | arm64 | **Unsupported** | No standard GitHub-hosted runner exists to produce verified evidence |
-| **Bun** (v1.x) | macOS | arm64 | Automated in CI | Suite implemented; verified via CI runner |
-| **Bun** (v1.x) | macOS | amd64 | Automated in CI | Tested in CI runner (`macos-13`) |
-| **Bun** (v1.x) | Linux | amd64 | Automated in CI | Tested in CI runner (`ubuntu-latest`) |
-| **Bun** (v1.x) | Linux | arm64 | Automated in CI | Tested in CI runner (`ubuntu-24.04-arm`) |
+| **Bun** (v1.x) | macOS | arm64 | Suite written, not yet run | Suite implemented; no run has produced evidence yet |
+| **Bun** (v1.x) | macOS | amd64 | Suite written, not yet run | Targets `macos-13`; no run has produced evidence yet |
+| **Bun** (v1.x) | Linux | amd64 | Suite written, not yet run | Targets `ubuntu-latest`; no run has produced evidence yet |
+| **Bun** (v1.x) | Linux | arm64 | Suite written, not yet run | Targets `ubuntu-24.04-arm`; no run has produced evidence yet |
 | **Bun** (v1.x) | Windows | amd64 | **Unsupported** | Upstream Bun on Windows has known proxy routing and loopback socket limitations |
 | **Bun** (v1.x) | Windows | arm64 | **Unsupported** | No standard GitHub-hosted runner exists to produce verified evidence |
 
