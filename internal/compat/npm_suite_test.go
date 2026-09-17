@@ -188,7 +188,7 @@ func TestNpm_Workspaces(t *testing.T) {
 		t.Fatalf("npm install in workspaces failed (code %d): %v\nstdout: %s\nstderr: %s", code, err, stdout, stderr)
 	}
 
-	AssertInstalledPackage(t, dir, "fixture-unscoped", "1.0.0")
+	AssertWorkspaceDependencyResolvable(t, dir, appDir, "fixture-unscoped", "1.0.0")
 }
 
 func TestNpm_OfflineAndCache(t *testing.T) {

@@ -181,7 +181,9 @@ func TestBun_Workspaces(t *testing.T) {
 		t.Fatalf("bun install in workspace failed: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
 	}
 
-	AssertInstalledPackage(t, dir, "fixture-unscoped", "1.0.0")
+	// The workspace member declared the dependency; whether Bun hoists it to
+	// the root or keeps it beside the member is Bun's choice, not the gateway's.
+	AssertWorkspaceDependencyResolvable(t, dir, appDir, "fixture-unscoped", "1.0.0")
 }
 
 func TestBun_OfflineAndCache(t *testing.T) {

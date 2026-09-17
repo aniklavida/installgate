@@ -531,3 +531,65 @@ func requirePackageManager(t *testing.T, name string) {
 	}
 	t.Skipf("%s is not installed on this host; this suite covers %s only where it is present", name, name)
 }
+
+// AssertWorkspaceDependencyResolvable verifies that a workspace member can
+// resolve a dependency it declared, wherever the package manager chose to put
+// it.
+//
+// The layout is not the contract. npm and Yarn hoist a workspace member's
+// dependency to the root node_modules; pnpm links it from the virtual store;
+// Bun may do either. Asserting one directory tests the package manager's
+// layout rather than whether the gateway served the package, and fails on a
+// manager that is behaving correctly.
+//
+// Node's own resolution algorithm walks node_modules upward from the importing
+// file, so this checks the same chain: the member's own node_modules first,
+// then each ancestor up to the workspace root. If none of them has it, the
+// failure prints every place the package *was* found, because that is the
+// information needed to tell a layout difference from a real install failure.
+func AssertWorkspaceDependencyResolvable(t *testing.T, workspaceRoot, memberDir, pkgName, expectedVersion string) {
+	t.Helper()
+
+	dir := memberDir
+	for {
+		candidate := filepath.Join(dir, "node_modules", filepath.FromSlash(pkgName))
+		if _, err := os.Stat(filepath.Join(candidate, "package.json")); err == nil {
+			assertPackageContents(t, candidate, pkgName, expectedVersion)
+			return
+		}
+		if dir == workspaceRoot {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	t.Errorf("%s is not resolvable from %s by walking node_modules up to %s", pkgName, memberDir, workspaceRoot)
+	for _, found := range findPackageDirs(workspaceRoot, pkgName) {
+		t.Logf("  found instead at: %s", strings.TrimPrefix(found, workspaceRoot))
+	}
+	t.FailNow()
+}
+
+// findPackageDirs reports every directory under root named pkgName, so a
+// failure can say where the package manager actually put it.
+func findPackageDirs(root, pkgName string) []string {
+	var found []string
+	base := filepath.Base(filepath.FromSlash(pkgName))
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && d.Name() == base {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if len(found) == 0 {
+		found = append(found, "(nowhere under the workspace root)")
+	}
+	return found
+}

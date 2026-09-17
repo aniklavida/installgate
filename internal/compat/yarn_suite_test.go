@@ -187,7 +187,7 @@ func TestYarn_Workspaces(t *testing.T) {
 		t.Fatalf("yarn install in workspace failed: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
 	}
 
-	AssertInstalledPackage(t, dir, "fixture-unscoped", "1.0.0")
+	AssertWorkspaceDependencyResolvable(t, dir, appDir, "fixture-unscoped", "1.0.0")
 }
 
 func TestYarn_OfflineAndCache(t *testing.T) {

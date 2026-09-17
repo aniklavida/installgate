@@ -190,16 +190,10 @@ func TestPnpm_Workspaces(t *testing.T) {
 		t.Fatalf("pnpm install in workspace failed: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
 	}
 
-	// Verify package is present in workspace package node_modules or root
-	pkgInstalled := false
-	if _, err := os.Stat(filepath.Join(appDir, "node_modules", "fixture-unscoped")); err == nil {
-		pkgInstalled = true
-	} else if _, err := os.Stat(filepath.Join(dir, "node_modules", "fixture-unscoped")); err == nil {
-		pkgInstalled = true
-	}
-	if !pkgInstalled {
-		t.Errorf("fixture-unscoped was not installed in workspace")
-	}
+	// This previously checked only that a directory of that name existed,
+	// which an empty directory satisfies. The shared helper walks the same
+	// resolution chain and also reads the package.json and payload.
+	AssertWorkspaceDependencyResolvable(t, dir, appDir, "fixture-unscoped", "1.0.0")
 }
 
 func TestPnpm_OfflineAndCache(t *testing.T) {
