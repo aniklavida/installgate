@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,9 +12,7 @@ import (
 
 func skipIfYarnMissing(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("yarn"); err != nil {
-		t.Skip("yarn binary not found on this host; skipping local yarn test; verified in CI runner")
-	}
+	requirePackageManager(t, "yarn")
 }
 
 func setupYarnWorkspace(t *testing.T, gatewayURL string, pkgJSONContent string) string {

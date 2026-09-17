@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -13,9 +12,7 @@ import (
 
 func skipIfBunMissing(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("bun"); err != nil {
-		t.Skip("bun binary not found on this host; skipping local bun test; verified in CI runner")
-	}
+	requirePackageManager(t, "bun")
 	if runtime.GOOS == "windows" {
 		t.Log("Note: Bun Windows support under proxying registries has known upstream limitations.")
 	}

@@ -436,3 +436,98 @@ func AssertInstalledPackage(t *testing.T, workDir, pkgName, expectedVersion stri
 		t.Errorf("index.js corrupted in %s: %s", pkgName, string(indexData))
 	}
 }
+
+// AssertPnpmLinkedDependency verifies a package that pnpm resolved as a
+// dependency of dependent — a peer, optional or ordinary transitive one.
+//
+// It deliberately does not look in the project's top-level node_modules.
+// pnpm's virtual store holds every package at
+// node_modules/.pnpm/<name>@<version>[_<peer-suffix>]/node_modules/<name> and
+// links only *declared* dependencies where the project root can import them.
+// Refusing to hoist is the feature pnpm exists for, so asserting npm's flat
+// layout against a pnpm install tests that feature backwards: it fails when
+// pnpm is working correctly, and would pass if pnpm started leaking phantom
+// dependencies.
+func AssertPnpmLinkedDependency(t *testing.T, workDir, dependent, dependentVersion, pkgName, expectedVersion string) {
+	t.Helper()
+
+	storeName := strings.ReplaceAll(dependent, "/", "+") + "@" + dependentVersion
+	// The directory may carry a peer-resolution suffix, e.g.
+	// fixture-peer@1.0.0_fixture-unscoped@1.0.0.
+	pattern := filepath.Join(workDir, "node_modules", ".pnpm", storeName+"*", "node_modules", filepath.FromSlash(pkgName))
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatalf("globbing pnpm store for %s under %s: %v", pkgName, dependent, err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("expected %s linked under %s in the pnpm store (%s), found nothing", pkgName, dependent, pattern)
+	}
+
+	assertPackageContents(t, matches[0], pkgName, expectedVersion)
+}
+
+// AssertNotHoisted verifies a package is absent from the project's top-level
+// node_modules. Under pnpm this is a guarantee, not an accident: code that
+// never declared the dependency must not be able to import it.
+func AssertNotHoisted(t *testing.T, workDir, pkgName string) {
+	t.Helper()
+
+	path := filepath.Join(workDir, "node_modules", filepath.FromSlash(pkgName))
+	if _, err := os.Lstat(path); err == nil {
+		t.Errorf("%s is reachable at the project root (%s); an undeclared dependency must not be hoisted under pnpm", pkgName, path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("checking %s is not hoisted: %v", pkgName, err)
+	}
+}
+
+// assertPackageContents checks the package.json identity and the fixture's
+// index.js payload for a package directory, wherever it lives on disk.
+func assertPackageContents(t *testing.T, pkgDir, pkgName, expectedVersion string) {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(pkgDir, "package.json"))
+	if err != nil {
+		t.Fatalf("expected package %s at %s, but read failed: %v", pkgName, pkgDir, err)
+	}
+
+	var parsed struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("invalid package.json for %s: %v", pkgName, err)
+	}
+	if parsed.Name != pkgName {
+		t.Errorf("installed package name mismatch: got %q, want %q", parsed.Name, pkgName)
+	}
+	if parsed.Version != expectedVersion {
+		t.Errorf("installed package version mismatch for %s: got %q, want %q", pkgName, parsed.Version, expectedVersion)
+	}
+
+	indexData, err := os.ReadFile(filepath.Join(pkgDir, "index.js"))
+	if err != nil {
+		t.Fatalf("missing index.js in %s: %v", pkgName, err)
+	}
+	if !bytes.Contains(indexData, []byte(pkgName)) {
+		t.Errorf("index.js corrupted in %s: %s", pkgName, string(indexData))
+	}
+}
+
+// requirePackageManager skips a suite when the package manager is not
+// installed, except where the environment declares that it must be.
+//
+// CI sets INSTALLGATE_REQUIRE_PACKAGE_MANAGERS=1. Without it a missing binary
+// silently skips, and a silent skip on the runner is indistinguishable from a
+// pass — which is how a compatibility matrix comes to claim coverage it does
+// not have. The Bun setup step is `continue-on-error`, so this is not
+// hypothetical.
+func requirePackageManager(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err == nil {
+		return
+	}
+	if os.Getenv("INSTALLGATE_REQUIRE_PACKAGE_MANAGERS") == "1" {
+		t.Fatalf("%s is not on PATH, but INSTALLGATE_REQUIRE_PACKAGE_MANAGERS=1 declares this environment covers it; the matrix must not report coverage it does not have", name)
+	}
+	t.Skipf("%s is not installed on this host; this suite covers %s only where it is present", name, name)
+}

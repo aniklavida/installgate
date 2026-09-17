@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,9 +12,7 @@ import (
 
 func skipIfPnpmMissing(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("pnpm"); err != nil {
-		t.Skip("pnpm binary not found on this host; skipping local pnpm test; verified in CI runner")
-	}
+	requirePackageManager(t, "pnpm")
 }
 
 func setupPnpmWorkspace(t *testing.T, gatewayURL string, pkgJSONContent string) string {
@@ -99,9 +96,17 @@ func TestPnpm_PeerAndOptionalDependencies(t *testing.T) {
 		t.Fatalf("pnpm install failed (code %d): err=%v\nstdout: %s\nstderr: %s", code, err, stdout, stderr)
 	}
 
+	// Declared dependencies are linked at the project root.
 	AssertInstalledPackage(t, workDir, "fixture-peer", "1.0.0")
 	AssertInstalledPackage(t, workDir, "fixture-optional", "1.0.0")
-	AssertInstalledPackage(t, workDir, "fixture-unscoped", "1.0.0")
+
+	// fixture-unscoped is declared by neither: it arrives as fixture-peer's
+	// peer dependency and fixture-optional's optional dependency. The gateway
+	// has to serve it for either install to resolve, but pnpm keeps it in the
+	// virtual store rather than hoisting it to the root.
+	AssertPnpmLinkedDependency(t, workDir, "fixture-peer", "1.0.0", "fixture-unscoped", "1.0.0")
+	AssertPnpmLinkedDependency(t, workDir, "fixture-optional", "1.0.0", "fixture-unscoped", "1.0.0")
+	AssertNotHoisted(t, workDir, "fixture-unscoped")
 }
 
 func TestPnpm_LockfileDrivenInstall(t *testing.T) {

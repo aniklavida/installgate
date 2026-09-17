@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,9 +14,7 @@ import (
 
 func skipIfNpmMissing(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("npm"); err != nil {
-		t.Skip("npm binary not found on this host; skipping local npm test; verified in CI runner")
-	}
+	requirePackageManager(t, "npm")
 }
 
 func setupNpmWorkspace(t *testing.T, gatewayURL string, pkgJSONContent string) string {

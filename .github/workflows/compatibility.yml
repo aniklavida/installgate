@@ -67,6 +67,10 @@ jobs:
 
       - name: Run compatibility install suites
         shell: bash
+        env:
+          # A missing package manager must fail this job rather than skip
+          # quietly: a silent skip on the runner looks exactly like a pass.
+          INSTALLGATE_REQUIRE_PACKAGE_MANAGERS: "1"
         run: |
           go test -v ./internal/compat/...
 
