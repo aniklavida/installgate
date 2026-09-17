@@ -14,7 +14,7 @@ Testing runs through local suites and the continuous integration matrix in `.git
 
 **One caveat is recorded in the cell rather than hidden:** Bun's workspace test skips on Windows, and says why.
 
-**Separately, the CLI enable/disable lifecycle step had never passed on Windows,** and the cause turned out to be the workflow rather than the product. It built the test binary as `installgate_ci_bin` with no extension. `installgate start` re-execs itself through `os.Executable()`, and Go's Windows exec refuses a path with no recognised extension, so `start` failed with `executable file not found in %PATH%` while `status` — invoked directly by bash — worked. No real distribution ships an extensionless Windows binary. The workflow now builds `installgate_ci_bin.exe` there. Until a run passes that step, nothing in this document claims the CLI lifecycle works on Windows.
+**The CLI enable/disable lifecycle now passes on all five platforms, Windows included** ([run 35223006798](https://github.com/aniklavida/installgate/actions/runs/35223006798)). It had never passed on Windows before, and the cause was the workflow rather than the product: it built the test binary as `installgate_ci_bin` with no extension. `installgate start` re-execs itself through `os.Executable()`, and Go's Windows exec refuses a path with no recognised extension, so `start` failed with `executable file not found in %PATH%` while `status` — invoked directly by bash — worked. No real distribution ships an extensionless Windows binary. With the binary named `.exe`, the Windows run shows the gateway starting on `http://127.0.0.1:8945`, `enable npm` repointing the registry at it, and `disable npm` restoring the original.
 
 ## Compatibility matrix
 
