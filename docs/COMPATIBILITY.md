@@ -10,35 +10,39 @@ Testing runs through local suites and the continuous integration matrix in `.git
 
 **The macOS amd64 cells had never run at all, and could not have.** The matrix named `macos-13`, a runner image GitHub retired in December 2025. Jobs naming a retired label are never scheduled — they sit queued indefinitely, which also stops the whole matrix reaching a conclusion and keeps its logs unavailable. Four runs sat queued this way before anyone looked. The matrix now targets `macos-15-intel`, the replacement x86_64 label. Note that GitHub has said Intel macOS runners go away entirely when the macOS 15 image retires, so this column has a known expiry.
 
-**This table currently claims almost nothing.** The suites and the matrix exist; the workflow has not yet produced a run. Three cells are marked verified because they were executed on a real macOS arm64 machine and their output recorded. Every other supported cell says "Suite written, not yet run", and stays that way until a run exists to cite — a written suite is not a passing one, and this document would be worthless if it blurred them.
+**The matrix has now produced a run, and the table cites it.** Every supported cell below was verified by [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975): the compatibility-suites step succeeded on all five platforms, 35 tests each. Before that run this table said "Suite written, not yet run" for almost every cell, because a written suite is not a passing one and the document would be worthless if it blurred them. The same rule still applies to anything added from here.
+
+**One caveat is recorded in the cell rather than hidden:** Bun's workspace test skips on Windows, and says why.
+
+**Separately, the CLI enable/disable lifecycle step still fails on Windows** in that same run — the gateway did not report itself running. That is a different step from the compatibility suites and is not evidence about package-manager compatibility either way. It is being diagnosed; nothing in this table depends on it.
 
 ## Compatibility matrix
 
 | Package Manager | OS | Architecture | Status | Verification Evidence / Reason |
 |---|---|---|---|---|
-| **npm** (v10+) | macOS | arm64 | Implemented and tested | Passing: scoped/unscoped, peer/optional, lockfile (`npm ci`), workspaces, cache, 403 block on corruption |
-| **npm** (v10+) | macOS | amd64 | Suite written, not yet run | Targets `macos-15-intel`; no run has produced evidence yet |
-| **npm** (v10+) | Linux | amd64 | Suite written, not yet run | Targets `ubuntu-latest`; no run has produced evidence yet |
-| **npm** (v10+) | Linux | arm64 | Suite written, not yet run | Targets `ubuntu-24.04-arm`; no run has produced evidence yet |
-| **npm** (v10+) | Windows | amd64 | Suite written, not yet run | Targets `windows-latest`; no run has produced evidence yet, CRLF line endings preserved |
+| **npm** (v10+) | macOS | arm64 | Implemented and tested | All 7 npm tests passing on `macos-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **npm** (v10+) | macOS | amd64 | Implemented and tested | All 7 npm tests passing on `macos-15-intel` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **npm** (v10+) | Linux | amd64 | Implemented and tested | All 7 npm tests passing on `ubuntu-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **npm** (v10+) | Linux | arm64 | Implemented and tested | All 7 npm tests passing on `ubuntu-24.04-arm` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **npm** (v10+) | Windows | amd64 | Implemented and tested | All 7 npm tests passing on `windows-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
 | **npm** (v10+) | Windows | arm64 | **Unsupported** | No standard GitHub-hosted runner exists to produce verified evidence |
-| **pnpm** (v9/v10) | macOS | arm64 | Implemented and tested | Passing: scoped/unscoped, peer/optional, `pnpm-workspace.yaml`, frozen lockfile, offline, 403 block |
-| **pnpm** (v9/v10) | macOS | amd64 | Suite written, not yet run | Targets `macos-15-intel`; no run has produced evidence yet |
-| **pnpm** (v9/v10) | Linux | amd64 | Suite written, not yet run | Targets `ubuntu-latest`; no run has produced evidence yet |
-| **pnpm** (v9/v10) | Linux | arm64 | Suite written, not yet run | Targets `ubuntu-24.04-arm`; no run has produced evidence yet |
-| **pnpm** (v9/v10) | Windows | amd64 | Suite written, not yet run | Targets `windows-latest`; no run has produced evidence yet |
+| **pnpm** (v9/v10) | macOS | arm64 | Implemented and tested | All 6 pnpm tests passing on `macos-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **pnpm** (v9/v10) | macOS | amd64 | Implemented and tested | All 6 pnpm tests passing on `macos-15-intel` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **pnpm** (v9/v10) | Linux | amd64 | Implemented and tested | All 6 pnpm tests passing on `ubuntu-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **pnpm** (v9/v10) | Linux | arm64 | Implemented and tested | All 6 pnpm tests passing on `ubuntu-24.04-arm` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **pnpm** (v9/v10) | Windows | amd64 | Implemented and tested | All 6 pnpm tests passing on `windows-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
 | **pnpm** (v9/v10) | Windows | arm64 | **Unsupported** | No standard GitHub-hosted runner exists to produce verified evidence |
-| **Yarn** (v1.22+) | macOS | arm64 | Implemented and tested | Passing: scoped/unscoped, peer/optional, `yarn.lock`, workspaces, offline, 403 block |
-| **Yarn** (v1.22+) | macOS | amd64 | Suite written, not yet run | Targets `macos-15-intel`; no run has produced evidence yet |
-| **Yarn** (v1.22+) | Linux | amd64 | Suite written, not yet run | Targets `ubuntu-latest`; no run has produced evidence yet |
-| **Yarn** (v1.22+) | Linux | arm64 | Suite written, not yet run | Targets `ubuntu-24.04-arm`; no run has produced evidence yet |
-| **Yarn** (v1.22+) | Windows | amd64 | Suite written, not yet run | Targets `windows-latest`; no run has produced evidence yet |
+| **Yarn** (v1.22+) | macOS | arm64 | Implemented and tested | All 6 Yarn tests passing on `macos-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **Yarn** (v1.22+) | macOS | amd64 | Implemented and tested | All 6 Yarn tests passing on `macos-15-intel` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **Yarn** (v1.22+) | Linux | amd64 | Implemented and tested | All 6 Yarn tests passing on `ubuntu-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **Yarn** (v1.22+) | Linux | arm64 | Implemented and tested | All 6 Yarn tests passing on `ubuntu-24.04-arm` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **Yarn** (v1.22+) | Windows | amd64 | Implemented and tested | All 6 Yarn tests passing on `windows-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
 | **Yarn** (v1.22+) | Windows | arm64 | **Unsupported** | No standard GitHub-hosted runner exists to produce verified evidence |
-| **Bun** (v1.x) | macOS | arm64 | Suite written, not yet run | Suite implemented; no run has produced evidence yet |
-| **Bun** (v1.x) | macOS | amd64 | Suite written, not yet run | Targets `macos-15-intel`; no run has produced evidence yet |
-| **Bun** (v1.x) | Linux | amd64 | Suite written, not yet run | Targets `ubuntu-latest`; no run has produced evidence yet |
-| **Bun** (v1.x) | Linux | arm64 | Suite written, not yet run | Targets `ubuntu-24.04-arm`; no run has produced evidence yet |
-| **Bun** (v1.x) | Windows | amd64 | **Unsupported** | Upstream Bun on Windows has known proxy routing and loopback socket limitations |
+| **Bun** (v1.x) | macOS | arm64 | Implemented and tested | All 6 Bun tests passing on `macos-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **Bun** (v1.x) | macOS | amd64 | Implemented and tested | All 6 Bun tests passing on `macos-15-intel` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **Bun** (v1.x) | Linux | amd64 | Implemented and tested | All 6 Bun tests passing on `ubuntu-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **Bun** (v1.x) | Linux | arm64 | Implemented and tested | All 6 Bun tests passing on `ubuntu-24.04-arm` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) |
+| **Bun** (v1.x) | Windows | amd64 | Implemented and tested, one skip | 5 of 6 Bun tests passing on `windows-latest` in [run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975). `TestBun_Workspaces` skips: bun cannot create the workspace symlink without Developer Mode. The same run shows the gateway had already served every package before bun failed, so this is a client-side limitation, not a gateway one. This cell previously read **Unsupported**, citing "proxy routing and loopback socket limitations" — the run disproves that. |
 | **Bun** (v1.x) | Windows | arm64 | **Unsupported** | No standard GitHub-hosted runner exists to produce verified evidence |
 
 ## Verified client characteristics
@@ -102,7 +106,7 @@ error Error: http://127.0.0.1:58053/fixture-tampered/-/fixture-tampered-1.0.0.tg
 
 ## Explicitly unsupported combinations
 
-The following combinations cannot be proved and are formally documented as unsupported:
+The following combinations cannot be proved and are formally documented as unsupported. An entry stays here only while no run contradicts it:
 
 1. **Windows on arm64**: Unsupported across all package managers because GitHub Actions does not provide standard hosted runners for Windows on ARM. Compatibility cannot be proven without verified execution evidence.
-2. **Bun on Windows**: Unsupported due to upstream proxy redirection and socket handling issues in Bun on Windows when interacting with loopback proxies.
+2. **~~Bun on Windows~~ — withdrawn.** This entry claimed Bun was unsupported on Windows "due to upstream proxy redirection and socket handling issues ... when interacting with loopback proxies." [Run 35222014975](https://github.com/aniklavida/installgate/actions/runs/35222014975) disproves it: five of six Bun tests pass on `windows-latest`, including the scoped/unscoped install, lockfile, cache and corrupted-tarball cases, all of them going through the loopback gateway. The one remaining gap is `TestBun_Workspaces`, which skips because bun cannot create a workspace symlink without Developer Mode — a Windows privilege limitation in the client, unrelated to proxying. The matrix row records it.

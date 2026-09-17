@@ -93,9 +93,36 @@ jobs:
 
           printf "registry=https://registry.npmjs.org/\naudit=false\n" > "$NPM_CONFIG_USERCONFIG"
 
-          ./installgate_ci_bin start --port 8945 &
+          # Poll for readiness rather than sleeping a fixed two seconds. A
+          # fixed sleep is a guess about the slowest runner, and when it is
+          # wrong the failure says only "gateway not running" — which is what
+          # happened on Windows and cost a round trip to diagnose. Capture the
+          # gateway's own output so a failure to start can say why.
+          ./installgate_ci_bin start --port 8945 > gateway.log 2>&1 &
           GATEWAY_PID=$!
-          sleep 2
+
+          # "Gateway process:  running on <url>" is the positive marker; the
+          # stopped branch prints "stopped". Match the positive one rather than
+          # inverting a match for the negative, which any other line satisfies.
+          ready=""
+          for _ in $(seq 1 30); do
+            if ./installgate_ci_bin status 2>/dev/null | grep -qE "Gateway process: +running on"; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ -z "$ready" ]; then
+            echo "::error::gateway did not become ready within 30s"
+            echo "--- installgate status ---"
+            ./installgate_ci_bin status || true
+            echo "--- gateway.log ---"
+            cat gateway.log || echo "(no output captured)"
+            echo "--- is the process still alive? ---"
+            kill -0 "$GATEWAY_PID" 2>/dev/null && echo "pid $GATEWAY_PID alive" || echo "pid $GATEWAY_PID gone"
+            exit 1
+          fi
 
           ./installgate_ci_bin status
           ./installgate_ci_bin enable npm
@@ -109,4 +136,4 @@ jobs:
           grep -F "https://registry.npmjs.org/" "$NPM_CONFIG_USERCONFIG"
 
           ./installgate_ci_bin stop || kill $GATEWAY_PID 2>/dev/null || true
-          rm -rf "$TEST_DIR" ./installgate_ci_bin
+          rm -rf "$TEST_DIR" ./installgate_ci_bin gateway.log
