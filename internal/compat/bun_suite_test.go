@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,9 +14,35 @@ import (
 func skipIfBunMissing(t *testing.T) {
 	t.Helper()
 	requirePackageManager(t, "bun")
-	if runtime.GOOS == "windows" {
-		t.Log("Note: Bun Windows support under proxying registries has known upstream limitations.")
+}
+
+// skipIfBunWindowsSymlink turns one specific, diagnosed client-side failure
+// into a skip, and leaves every other failure failing.
+//
+// On Windows, `bun install` in a workspace ends with:
+//
+//	ENOENT: No such file or directory: failed to symlink dependencies for
+//	package: @workspace/app@workspace:..\..\..\..\..\..\<temp path> (symlink)
+//
+// The same run reports "Resolved, downloaded and extracted [4]" — the gateway
+// served every package. Bun then failed to create the symlink that points the
+// workspace member into place, which unprivileged Windows processes cannot do
+// without Developer Mode. Nothing about it involves a registry or a proxy.
+//
+// The note this replaces said Bun had "known upstream limitations under
+// proxying registries", which pointed at the wrong component: someone reading
+// it would conclude the gateway was at fault. Matching the actual error text
+// means that if Bun fixes this, or the failure becomes a different one, the
+// test starts failing again instead of skipping forever.
+func skipIfBunWindowsSymlink(t *testing.T, stderr string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return
 	}
+	if !strings.Contains(stderr, "failed to symlink dependencies for package") {
+		return
+	}
+	t.Skip("bun could not create the workspace symlink on Windows; the gateway served every package (see the 'Resolved, downloaded and extracted' line). This is a Windows symlink-privilege limitation in the client, not a gateway failure.")
 }
 
 func setupBunWorkspace(t *testing.T, gatewayURL string, pkgJSONContent string) string {
@@ -178,6 +205,7 @@ func TestBun_Workspaces(t *testing.T) {
 
 	stdout, stderr, code, err := runBun(ctx, dir, h.GatewayURL())
 	if err != nil || code != 0 {
+		skipIfBunWindowsSymlink(t, stderr)
 		t.Fatalf("bun install in workspace failed: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
 	}
 
