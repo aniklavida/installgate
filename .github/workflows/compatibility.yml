@@ -27,7 +27,13 @@ jobs:
             runner: macos-latest
           - os: macos
             arch: amd64
-            runner: macos-13
+            # `macos-13` was retired in December 2025. Jobs naming it are never
+            # scheduled — they queue indefinitely, so the whole matrix never
+            # reaches a conclusion and its logs stay unavailable. This matrix
+            # had never once completed. `macos-15-intel` is the replacement
+            # x86_64 label; GitHub has said Intel macOS runners go away
+            # entirely when the macOS 15 image retires.
+            runner: macos-15-intel
           - os: windows
             arch: amd64
             runner: windows-latest
