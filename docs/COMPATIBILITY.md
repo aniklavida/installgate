@@ -14,7 +14,7 @@ Testing runs through local suites and the continuous integration matrix in `.git
 
 **One caveat is recorded in the cell rather than hidden:** Bun's workspace test skips on Windows, and says why.
 
-**Separately, the CLI enable/disable lifecycle step still fails on Windows** in that same run — the gateway did not report itself running. That is a different step from the compatibility suites and is not evidence about package-manager compatibility either way. It is being diagnosed; nothing in this table depends on it.
+**Separately, the CLI enable/disable lifecycle step had never passed on Windows,** and the cause turned out to be the workflow rather than the product. It built the test binary as `installgate_ci_bin` with no extension. `installgate start` re-execs itself through `os.Executable()`, and Go's Windows exec refuses a path with no recognised extension, so `start` failed with `executable file not found in %PATH%` while `status` — invoked directly by bash — worked. No real distribution ships an extensionless Windows binary. The workflow now builds `installgate_ci_bin.exe` there. Until a run passes that step, nothing in this document claims the CLI lifecycle works on Windows.
 
 ## Compatibility matrix
 

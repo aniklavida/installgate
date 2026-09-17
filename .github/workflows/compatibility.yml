@@ -84,7 +84,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go build -o ./installgate_ci_bin ./cmd/installgate
+
+          # Give the Windows binary its .exe. `installgate start` re-execs
+          # itself via os.Executable(), and Go's Windows exec refuses a path
+          # with no recognised extension — so an extensionless build made
+          # `start` fail with "executable file not found in %PATH%" while
+          # `status`, invoked directly by bash, worked fine. No real
+          # distribution ships an extensionless Windows binary; this was the
+          # workflow misnaming its own artefact, not a product defect.
+          BIN=./installgate_ci_bin
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            BIN=./installgate_ci_bin.exe
+          fi
+          go build -o "$BIN" ./cmd/installgate
 
           TEST_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t 'ig_compat_test')
           export INSTALLGATE_PORT=8945
@@ -98,7 +110,7 @@ jobs:
           # wrong the failure says only "gateway not running" — which is what
           # happened on Windows and cost a round trip to diagnose. Capture the
           # gateway's own output so a failure to start can say why.
-          ./installgate_ci_bin start --port 8945 > gateway.log 2>&1 &
+          "$BIN" start --port 8945 > gateway.log 2>&1 &
           GATEWAY_PID=$!
 
           # "Gateway process:  running on <url>" is the positive marker; the
@@ -106,7 +118,7 @@ jobs:
           # inverting a match for the negative, which any other line satisfies.
           ready=""
           for _ in $(seq 1 30); do
-            if ./installgate_ci_bin status 2>/dev/null | grep -qE "Gateway process: +running on"; then
+            if "$BIN" status 2>/dev/null | grep -qE "Gateway process: +running on"; then
               ready=1
               break
             fi
@@ -116,7 +128,7 @@ jobs:
           if [ -z "$ready" ]; then
             echo "::error::gateway did not become ready within 30s"
             echo "--- installgate status ---"
-            ./installgate_ci_bin status || true
+            "$BIN" status || true
             echo "--- gateway.log ---"
             cat gateway.log || echo "(no output captured)"
             echo "--- is the process still alive? ---"
@@ -124,16 +136,16 @@ jobs:
             exit 1
           fi
 
-          ./installgate_ci_bin status
-          ./installgate_ci_bin enable npm
-          ./installgate_ci_bin status
+          "$BIN" status
+          "$BIN" enable npm
+          "$BIN" status
 
           grep -F "127.0.0.1:8945" "$NPM_CONFIG_USERCONFIG"
 
-          ./installgate_ci_bin disable npm
-          ./installgate_ci_bin status
+          "$BIN" disable npm
+          "$BIN" status
 
           grep -F "https://registry.npmjs.org/" "$NPM_CONFIG_USERCONFIG"
 
-          ./installgate_ci_bin stop || kill $GATEWAY_PID 2>/dev/null || true
-          rm -rf "$TEST_DIR" ./installgate_ci_bin gateway.log
+          "$BIN" stop || kill $GATEWAY_PID 2>/dev/null || true
+          rm -rf "$TEST_DIR" "$BIN" gateway.log
