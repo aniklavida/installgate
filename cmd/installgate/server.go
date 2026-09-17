@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -261,22 +262,26 @@ func runStop(args []string) {
 		os.Exit(1)
 	}
 
-	_ = proc.Signal(syscall.SIGTERM)
-
-	// Wait up to 5 seconds for process termination
-	deadline := time.Now().Add(5 * time.Second)
-	stopped := false
-	for time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
-		// On Unix, FindProcess always succeeds; Signal(0) checks if process is alive
-		if err := proc.Signal(syscall.Signal(0)); err != nil {
-			stopped = true
-			break
-		}
-	}
-
-	if !stopped {
+	if runtime.GOOS == "windows" {
 		_ = proc.Kill()
+	} else {
+		_ = proc.Signal(syscall.SIGTERM)
+
+		// Wait up to 5 seconds for process termination
+		deadline := time.Now().Add(5 * time.Second)
+		stopped := false
+		for time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+			// On Unix, FindProcess always succeeds; Signal(0) checks if process is alive
+			if err := proc.Signal(syscall.Signal(0)); err != nil {
+				stopped = true
+				break
+			}
+		}
+
+		if !stopped {
+			_ = proc.Kill()
+		}
 	}
 
 	_ = os.Remove(pidFile)

@@ -1,0 +1,102 @@
+name: Compatibility Matrix
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: ${{ matrix.os }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: macos
+            arch: arm64
+            runner: macos-latest
+          - os: macos
+            arch: amd64
+            runner: macos-13
+          - os: windows
+            arch: amd64
+            runner: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Setup Node.js and npm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Yarn
+        shell: bash
+        run: |
+          corepack enable || npm install -g yarn
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        continue-on-error: true
+
+      - name: Verify compilation
+        shell: bash
+        run: |
+          go vet ./...
+          go build ./cmd/installgate
+
+      - name: Run compatibility install suites
+        shell: bash
+        run: |
+          go test -v ./internal/compat/...
+
+      - name: Exercise CLI enable and disable lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o ./installgate_ci_bin ./cmd/installgate
+
+          TEST_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t 'ig_compat_test')
+          export INSTALLGATE_PORT=8945
+          export INSTALLGATE_DATA_DIR="$TEST_DIR/data"
+          export NPM_CONFIG_USERCONFIG="$TEST_DIR/.npmrc"
+
+          printf "registry=https://registry.npmjs.org/\naudit=false\n" > "$NPM_CONFIG_USERCONFIG"
+
+          ./installgate_ci_bin start --port 8945 &
+          GATEWAY_PID=$!
+          sleep 2
+
+          ./installgate_ci_bin status
+          ./installgate_ci_bin enable npm
+          ./installgate_ci_bin status
+
+          grep -F "127.0.0.1:8945" "$NPM_CONFIG_USERCONFIG"
+
+          ./installgate_ci_bin disable npm
+          ./installgate_ci_bin status
+
+          grep -F "https://registry.npmjs.org/" "$NPM_CONFIG_USERCONFIG"
+
+          ./installgate_ci_bin stop || kill $GATEWAY_PID 2>/dev/null || true
+          rm -rf "$TEST_DIR" ./installgate_ci_bin
